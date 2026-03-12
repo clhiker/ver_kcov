@@ -1,0 +1,10 @@
+# Verifier 覆盖率采集框架依赖
+
+# YAML 配置解析
+pyyaml>=6.0
+
+# 可选：进度条显示
+tqdm>=4.65.0
+
+# 可选：并行处理增强
+multiprocessing-logging>=0.3.4
