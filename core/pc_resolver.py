@@ -68,58 +68,44 @@ class PCResolver:
         return lookup_table
     
     def _run_batch_addr2line(self, pcs: List[str]) -> Dict[str, SourceLocation]:
-        """批量运行 addr2line，分批处理避免超时"""
+        """批量运行 addr2line"""
         if not pcs:
             return {}
         
-        # 分批处理，每批 10000 个地址
-        BATCH_SIZE = 10000
-        lookup_table = {}
-        total = len(pcs)
+        # 准备输入内容
+        input_text = "\n".join(pcs)
         
-        print(f"[*] 开始解析 {total} 个 PC 地址（分批处理，每批{BATCH_SIZE}个）...")
-        
-        for i in range(0, total, BATCH_SIZE):
-            batch = pcs[i:i + BATCH_SIZE]
-            batch_num = i // BATCH_SIZE + 1
-            total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
+        try:
+            # 运行 addr2line
+            # -e: 指定可执行文件
+            # -f: 显示函数名
+            # -i: 显示 inline 信息
+            # -p: 简洁输出格式
+            result = subprocess.run(
+                ['addr2line', '-e', self.vmlinux_path, '-f', '-i', '-p'],
+                input=input_text,
+                capture_output=True,
+                text=True,
+                check=True
+            )
             
-            print(f"\r[*] 处理批次 {batch_num}/{total_batches}...", end='', flush=True)
+            # 解析输出
+            lookup_table = {}
+            output_lines = result.stdout.strip().split('\n')
             
-            # 准备输入内容
-            input_text = "\n".join(batch)
+            for pc, output_line in zip(pcs, output_lines):
+                location = self._parse_addr2line_output(pc, output_line)
+                if location:
+                    lookup_table[pc] = location
             
-            try:
-                # 运行 addr2line
-                result = subprocess.run(
-                    ['addr2line', '-e', self.vmlinux_path, '-f', '-i', '-p'],
-                    input=input_text,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    timeout=300  # 5 分钟超时
-                )
-                
-                # 解析输出
-                output_lines = result.stdout.strip().split('\n')
-                
-                for pc, output_line in zip(batch, output_lines):
-                    location = self._parse_addr2line_output(pc, output_line)
-                    if location:
-                        lookup_table[pc] = location
-                
-            except subprocess.TimeoutExpired:
-                print(f"\n[!] addr2line 批次 {batch_num} 超时，跳过...")
-                continue
-            except subprocess.CalledProcessError as e:
-                print(f"\n[!] addr2line 批次 {batch_num} 失败：{e.stderr}")
-                continue
-            except FileNotFoundError:
-                print("\n[!] addr2line 未找到，请安装 binutils")
-                return {}
-        
-        print(f"\r[*] PC 地址解析完成，共解析 {len(lookup_table)} 个地址")
-        return lookup_table
+            return lookup_table
+            
+        except subprocess.CalledProcessError as e:
+            print(f"[!] addr2line failed: {e.stderr}")
+            return {}
+        except FileNotFoundError:
+            print("[!] addr2line not found, please install binutils")
+            return {}
     
     def _parse_addr2line_output(self, pc: str, output: str) -> Optional[SourceLocation]:
         """
@@ -195,7 +181,7 @@ class PCResolver:
     
     def resolve_path(self, pcs: List[str]) -> List[SourceLocation]:
         """
-        解析整个路径的源码位置，带进度显示
+        解析整个路径的源码位置
         
         Args:
             pcs: PC 序列
@@ -204,22 +190,14 @@ class PCResolver:
             SourceLocation 列表
         """
         locations = []
-        total = len(pcs)
-        
-        for i, pc in enumerate(pcs, 1):
+        for pc in pcs:
             if pc in self._lookup_table:
                 locations.append(self._lookup_table[pc])
             else:
                 # 如果不在查找表中，单独解析
-                if i % 10 == 0 or i == total:  # 每 10 个显示一次进度
-                    print(f"\r[*] 解析 PC {i}/{total}...", end='', flush=True)
                 loc = self._resolve_single_pc(pc)
                 if loc:
                     locations.append(loc)
-        
-        if total > 0:
-            print(f"\r[*] 路径解析完成，共 {len(locations)} 个位置")
-        
         return locations
     
     def _resolve_single_pc(self, pc: str) -> Optional[SourceLocation]:
@@ -229,15 +207,13 @@ class PCResolver:
                 ['addr2line', '-e', self.vmlinux_path, '-f', '-i', '-p', pc],
                 capture_output=True,
                 text=True,
-                timeout=30  # 增加到 30 秒超时
+                timeout=5
             )
             
             if result.returncode == 0:
                 return self._parse_addr2line_output(pc, result.stdout.strip())
-        except subprocess.TimeoutExpired:
-            print(f"\n[!] addr2line 超时：{pc}")
         except Exception as e:
-            print(f"\n[!] 解析失败 {pc}: {e}")
+            print(f"[!] Failed to resolve {pc}: {e}")
         
         return None
     

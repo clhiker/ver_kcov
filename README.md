@@ -179,20 +179,6 @@ with CoverageDatabase("kcov_coverage.db") as db:
     print(f"需要回归测试的用例：{test_cases}")
 ```
 
-## 支持的环境
-
-本框架支持以下两种运行环境：
-
-### 1. 宿主机（WSL2）
-- 需要自定义编译的内核（启用 `CONFIG_KCOV=y`）
-- 直接运行，性能更好
-- 推荐用于日常开发和测试
-
-### 2. QEMU 虚拟机
-- 适用于需要更完整内核模拟的场景
-- 需要配置虚拟机和内核镜像
-- 推荐用于深度调试和验证
-
 ## 故障排查
 
 ### KCOV 采集失败
@@ -221,14 +207,6 @@ zgrep KCOV /proc/config.gz
 ```c
 #define KCOV_BUFFER_SIZE (2 << 20)  // 增大到 2MB
 ```
-
-**问题 4: KCOV_DISABLE 失败**
-
-```
-[ERROR] KCOV_DISABLE 失败：Invalid argument
-```
-
-这是**正常现象**。eBPF 程序加载后会触发内核 KCOV 插桩，即使调用 `KCOV_DISABLE` ioctl，内核仍可能继续收集。程序会正确保存已收集的 PC 数据，不影响使用。
 
 ### addr2line 解析失败
 

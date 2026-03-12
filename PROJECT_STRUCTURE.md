@@ -101,32 +101,14 @@ python3 main.py analyze --report
 
 ## 技术要点
 
-### 支持的环境
-
-本框架支持两种运行环境：
-
-1. **宿主机（WSL2）**
-   - 需要自定义编译的内核（启用 `CONFIG_KCOV=y`）
-   - 直接运行，性能更好
-   - 推荐用于日常开发和测试
-
-2. **QEMU 虚拟机**
-   - 适用于需要更完整内核模拟的场景
-   - 需要配置虚拟机和内核镜像
-   - 推荐用于深度调试和验证
-
 ### KCOV 缓冲区大小
-
 默认 2MB，可容纳约 260,000 个 PC。如需修改：
 ```c
 // kcov_runner.c
 #define KCOV_BUFFER_SIZE (2 << 20)  // 2MB
 ```
 
-**注意**：如果收集到的 PC 数量超过缓冲区大小，会导致数据丢失。增大缓冲区可以解决这个问题。
-
 ### Verifier 地址范围
-
 需要根据你的内核配置：
 ```bash
 ./scripts/extract_symbols.sh ./vmlinux
@@ -143,15 +125,3 @@ do_check:  0xffffffff81e08050
 verifier_start_addr: "0xffffffff81dcd390"
 verifier_end_addr: "0xffffffff81e17e30"
 ```
-
-### KCOV_DISABLE 失败说明
-
-运行时会看到：
-```
-[ERROR] KCOV_DISABLE 失败：Invalid argument
-```
-
-这是**正常现象**，原因是：
-- eBPF 程序加载后会触发内核 KCOV 插桩
-- 即使调用 `KCOV_DISABLE` ioctl，内核仍可能继续收集
-- 程序会正确保存已收集的 PC 数据，不影响使用

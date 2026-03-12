@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Set, Optional
 from datetime import datetime
-from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 
 # 添加项目根目录到路径
@@ -205,7 +204,7 @@ class CoveragePipeline:
     
     def _save_to_database(self, fingerprints: Dict[str, PathFingerprint]):
         """解析源码位置并保存到数据库"""
-        for testcase_name, fingerprint in tqdm(fingerprints.items(), desc="解析路径"):
+        for testcase_name, fingerprint in fingerprints.items():
             if not fingerprint.pcs:
                 continue
             
