@@ -126,21 +126,44 @@ class CoveragePipeline:
         print(f"[*] 唯一路径数：{self.stats['unique_paths']}")
         print(f"[*] 覆盖源码行数（去重后）：{self.stats['covered_lines']}")
         
-        # 显示每个测试用例的覆盖详情
-        db_stats = self.db.get_coverage_statistics()
-        testcase_coverage = db_stats.get('testcase_coverage', [])
-        if testcase_coverage:
+        # 显示本次运行的测试用例覆盖详情
+        if all_fingerprints:
             print("\n" + "-"*60)
-            print("[*] 各测试用例覆盖详情")
+            print("[*] 本次运行的测试用例覆盖详情")
             print("-"*60)
-            print(f"{'测试用例':<40} {'覆盖行数':<12} {'唯一行数':<12}")
-            print("-"*60)
-            for tc in testcase_coverage:
-                name = tc['name']
+            print(f"{'测试用例':<30} {'覆盖行数':<12} {'唯一行数':<12} {'状态':<10}")
+            print("-"*70)
+            
+            # 只显示本次运行的测试用例
+            for testcase_name, fingerprint in all_fingerprints.items():
+                # 获取该测试用例的覆盖详情
+                cursor = self.db.conn.cursor()
+                
+                # 该测试用例覆盖的唯一行数（去重）
+                cursor.execute('''
+                    SELECT COUNT(DISTINCT file_path || ":" || line_number) as count
+                    FROM source_coverage
+                    WHERE path_hash = ?
+                ''', (fingerprint.path_id,))
+                unique_lines = cursor.fetchone()['count']
+                
+                # 该测试用例覆盖的总行数（包含重复）
+                cursor.execute('''
+                    SELECT COUNT(*) as count
+                    FROM source_coverage
+                    WHERE path_hash = ?
+                ''', (fingerprint.path_id,))
+                covered_lines = cursor.fetchone()['count']
+                
+                # 标识状态
+                status = "失败" if unique_lines == 0 or covered_lines == 0 else "成功"
+                
+                # 显示
+                name = testcase_name
                 if len(name) > 38:
                     name = name[:35] + "..."
-                print(f"{name:<40} {tc['covered_lines']:<12} {tc['unique_lines']:<12}")
-            print("-"*60)
+                print(f"{name:<40} {covered_lines:<12} {unique_lines:<12} {status:<10}")
+            print("-"*70)
         
         print(f"[*] 耗时：{duration:.2f} 秒")
         print("="*60)
@@ -170,10 +193,10 @@ class CoveragePipeline:
             print(f"\r[{i}/{len(testcases)}] 处理 {Path(testcase).name}...", end='', flush=True)
             
             try:
-                # 收集 KCOV 数据
+                # 收集 KCOV 数据（即使 verifier 失败也会收集）
                 raw_pcs = self.collector.collect(testcase)
                 
-                # 生成指纹
+                # 生成指纹（即使没有 PC 也会生成空指纹）
                 fingerprint = self.fingerprinter.generate(raw_pcs)
                 
                 # 保存到数据库
@@ -186,13 +209,15 @@ class CoveragePipeline:
                     compression_rate=fingerprint.compression_rate
                 )
                 
-                # 保存唯一路径
-                self.db.save_path_fingerprint(fingerprint.path_id, fingerprint.pcs)
+                # 保存唯一路径（如果有的话）
+                if fingerprint.pc_count > 0:
+                    self.db.save_path_fingerprint(fingerprint.path_id, fingerprint.pcs)
                 
                 all_fingerprints[Path(testcase).name] = fingerprint
                 
             except Exception as e:
                 print(f"\n[!] 处理 {Path(testcase).name} 失败：{e}")
+                # 即使失败也保存一个空指纹，保证测试用例被记录
                 all_fingerprints[Path(testcase).name] = PathFingerprint(
                     path_id="",
                     pcs=[],

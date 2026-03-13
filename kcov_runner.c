@@ -335,23 +335,24 @@ int main(int argc, char *argv[])
     
     /* 步骤 3: 加载并验证 BPF 程序 */
     /* 这会触发 verifier，KCOV 会收集执行路径 */
-    if (load_and_verify_bpf(bpf_file) < 0) {
-        fprintf(stderr, "[ERROR] BPF 程序验证失败\n");
-        kcov_disable(&ctx);
-        kcov_cleanup(&ctx);
-        return 1;
-    }
+    int verify_result = load_and_verify_bpf(bpf_file);
     
-    /* 步骤 4: 禁用 KCOV */
+    /* 步骤 4: 禁用 KCOV - 无论验证成功还是失败，都要禁用并收集数据 */
     if (kcov_disable(&ctx) < 0) {
         fprintf(stderr, "[WARNING] 禁用 KCOV 失败\n");
     }
     
-    /* 步骤 5: 收集数据 */
+    /* 步骤 5: 收集数据 - 即使 verifier 失败也要收集 */
     if (kcov_collect(&ctx) < 0) {
         fprintf(stderr, "[ERROR] 收集 KCOV 数据失败\n");
         kcov_cleanup(&ctx);
         return 1;
+    }
+    
+    /* 检查 verifier 结果 */
+    if (verify_result < 0) {
+        fprintf(stderr, "[INFO] BPF 程序验证失败，但已收集 KCOV 数据\n");
+        fprintf(stderr, "[INFO] Verifier 执行路径已被记录，即使程序被拒绝\n");
     }
     
     /* 步骤 6: 输出结果 */
@@ -368,7 +369,13 @@ int main(int argc, char *argv[])
     kcov_cleanup(&ctx);
     
     if (ret == 0) {
-        printf("[INFO] 完成！\n");
+        if (verify_result >= 0) {
+            printf("[INFO] 完成！Verifier 验证通过。\n");
+        } else {
+            printf("[INFO] 完成！Verifier 验证失败，但覆盖率数据已保存。\n");
+            /* 返回 0 表示数据采集成功，即使 verifier 失败 */
+            ret = 0;
+        }
     }
     
     return ret;

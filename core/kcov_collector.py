@@ -33,30 +33,42 @@ class KCOVCollector:
         
         try:
             # 运行 KCOV 采集程序
+            # 注意：即使 verifier 失败（返回码非 0），也要尝试收集数据
             result = subprocess.run(
                 [str(self.kcov_runner), testcase_path],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
-                check=True
+                check=False  # 不自动抛出异常，让我们自己处理
             )
             
             # 从输出或文件读取 PC 序列
             if output_file:
-                return self._read_pcs_from_file(output_file)
+                pcs = self._read_pcs_from_file(output_file)
             else:
                 # 默认从 verifier_pcs.txt 读取
                 default_file = "verifier_pcs.txt"
                 if os.path.exists(default_file):
-                    return self._read_pcs_from_file(default_file)
+                    pcs = self._read_pcs_from_file(default_file)
                 else:
                     # 从 stdout 解析
-                    return self._parse_pcs_from_stdout(result.stdout)
+                    pcs = self._parse_pcs_from_stdout(result.stdout)
+            
+            # 如果没有收集到 PC，才报告错误
+            if not pcs:
+                if result.returncode != 0:
+                    print(f"[WARNING] {testcase_path} 验证失败，且未收集到 KCOV 数据")
+                else:
+                    print(f"[WARNING] {testcase_path} 未收集到任何 KCOV 数据")
+            
+            return pcs
                     
         except subprocess.TimeoutExpired:
             raise TimeoutError(f"KCOV collection timeout for {testcase_path}")
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"KCOV runner failed: {e.stderr}")
+        except Exception as e:
+            # 其他错误，打印警告但继续
+            print(f"[WARNING] 收集 {testcase_path} 时出错：{e}")
+            return []
     
     def collect_batch(self, testcase_paths: List[str], output_dir: str) -> dict:
         """

@@ -135,17 +135,19 @@ def print_report(report):
         print("\n" + "="*60)
         print("各测试用例覆盖详情")
         print("="*60)
-        print(f"{'测试用例':<40} {'覆盖行数':<12} {'唯一行数':<12}")
-        print("-"*60)
+        print(f"{'测试用例':<40} {'覆盖行数':<12} {'唯一行数':<12} {'状态':<10}")
+        print("-"*70)
         
         for tc in report.testcase_coverage:
             name = tc['name']
             # 截断过长的名字
             if len(name) > 38:
                 name = name[:35] + "..."
-            print(f"{name:<40} {tc['covered_lines']:<12} {tc['unique_lines']:<12}")
+            # 标识失败的测试用例
+            status = "失败" if tc['unique_lines'] == 0 or tc['covered_lines'] == 0 else "成功"
+            print(f"{name:<40} {tc['covered_lines']:<12} {tc['unique_lines']:<12} {status:<10}")
         
-        print("-"*60)
+        print("-"*70)
         print(f"总计 {len(report.testcase_coverage)} 个测试用例")
     
     print("="*60)
