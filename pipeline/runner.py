@@ -68,6 +68,10 @@ class CoveragePipeline:
         print(f"[*] 测试用例目录：{testcase_dir}")
         print(f"[*] 并行模式：{'开启' if parallel else '关闭'}")
         
+        # 清空旧数据
+        print("\n[*] 清空数据库中的旧数据...")
+        self.db.clear_all_data()
+        
         # 步骤 1: 发现测试用例
         testcases = self._discover_testcases(testcase_dir)
         self.stats['total_testcases'] = len(testcases)
@@ -290,14 +294,14 @@ class CoveragePipeline:
     
     def _save_to_database(self, fingerprints: Dict[str, PathFingerprint]):
         """解析源码位置并保存到数据库"""
-        # 步骤 1: 收集所有需要解析的唯一 PC
+        # 步骤 1: 按测试用例组织需要解析的 PC
+        testcase_to_pcs = {}
         all_pcs_needed = set()
-        path_to_pcs = {}
         
         for testcase_name, fingerprint in fingerprints.items():
             if not fingerprint.pcs:
                 continue
-            path_to_pcs[fingerprint.path_id] = fingerprint.pcs
+            testcase_to_pcs[testcase_name] = fingerprint.pcs
             all_pcs_needed.update(fingerprint.pcs)
         
         # 步骤 2: 批量解析所有 PC（利用查找表 + 补充解析）
@@ -311,17 +315,29 @@ class CoveragePipeline:
             # 合并到查找表
             self.resolver._lookup_table.update(missing_locations)
         
-        # 步骤 3: 使用查找表填充每个路径的源码位置
-        for path_id, pcs in tqdm(path_to_pcs.items(), desc="解析路径"):
-            # 直接从查找表获取
+        # 步骤 3: 为每个测试用例独立保存源码覆盖信息
+        for testcase_name, pcs in tqdm(testcase_to_pcs.items(), desc="保存测试用例覆盖"):
+            # 获取测试用例 ID
+            cursor = self.db.conn.cursor()
+            cursor.execute('SELECT id FROM test_cases WHERE name = ?', (testcase_name,))
+            row = cursor.fetchone()
+            if not row:
+                print(f"[!] 测试用例 {testcase_name} 未找到，跳过...")
+                continue
+            
+            testcase_id = row['id']
+            fingerprint = fingerprints[testcase_name]
+            path_id = fingerprint.path_id
+            
+            # 直接从查找表获取该测试用例的源码位置
             locations = [self.resolver._lookup_table[pc] for pc in pcs if pc in self.resolver._lookup_table]
             
             # 转换为字典格式
             loc_dicts = [loc.to_dict() for loc in locations if loc.file and loc.line > 0]
             
-            # 批量保存
+            # 批量保存（按 testcase_id 保存）
             if loc_dicts:
-                self.db.batch_save_source_coverage(path_id, loc_dicts)
+                self.db.batch_save_source_coverage(testcase_id, path_id, loc_dicts)
     
     def get_stats(self) -> dict:
         """获取统计信息"""

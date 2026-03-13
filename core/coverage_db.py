@@ -69,11 +69,13 @@ class CoverageDatabase:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS source_coverage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                testcase_id INTEGER NOT NULL,
                 path_hash TEXT NOT NULL,
                 file_path TEXT NOT NULL,
                 line_number INTEGER NOT NULL,
                 function_name TEXT,
                 pc_address TEXT,
+                FOREIGN KEY (testcase_id) REFERENCES test_cases(id),
                 FOREIGN KEY (path_hash) REFERENCES path_fingerprints(path_hash)
             )
         ''')
@@ -87,6 +89,9 @@ class CoverageDatabase:
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_source_path_hash ON source_coverage(path_hash)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_source_testcase_id ON source_coverage(testcase_id)
         ''')
         
         self.conn.commit()
@@ -134,7 +139,7 @@ class CoverageDatabase:
             self.conn.rollback()
             return False
     
-    def save_source_coverage(self, path_hash: str, file_path: str, 
+    def save_source_coverage(self, testcase_id: int, path_hash: str, file_path: str, 
                             line_number: int, function_name: str = "",
                             pc_address: str = "") -> bool:
         """保存源码覆盖信息"""
@@ -143,9 +148,9 @@ class CoverageDatabase:
         try:
             cursor.execute('''
                 INSERT INTO source_coverage 
-                (path_hash, file_path, line_number, function_name, pc_address)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (path_hash, file_path, line_number, function_name, pc_address))
+                (testcase_id, path_hash, file_path, line_number, function_name, pc_address)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (testcase_id, path_hash, file_path, line_number, function_name, pc_address))
             
             self.conn.commit()
             return True
@@ -153,11 +158,12 @@ class CoverageDatabase:
             # 可能是重复插入，忽略
             return False
     
-    def batch_save_source_coverage(self, path_hash: str, locations: List[Dict]) -> int:
+    def batch_save_source_coverage(self, testcase_id: int, path_hash: str, locations: List[Dict]) -> int:
         """
         批量保存源码覆盖信息
         
         Args:
+            testcase_id: 测试用例ID
             path_hash: 路径哈希
             locations: [{file, line, function, address}] 列表
             
@@ -171,6 +177,7 @@ class CoverageDatabase:
             data = []
             for loc in locations:
                 data.append((
+                    testcase_id,
                     path_hash,
                     loc.get('file', ''),
                     loc.get('line', 0),
@@ -180,8 +187,8 @@ class CoverageDatabase:
             
             cursor.executemany('''
                 INSERT OR IGNORE INTO source_coverage 
-                (path_hash, file_path, line_number, function_name, pc_address)
-                VALUES (?, ?, ?, ?, ?)
+                (testcase_id, path_hash, file_path, line_number, function_name, pc_address)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', data)
             
             count = cursor.rowcount
@@ -285,28 +292,28 @@ class CoverageDatabase:
         cursor = self.conn.cursor()
         
         # 获取所有测试用例
-        cursor.execute('SELECT name, path_hash FROM test_cases')
+        cursor.execute('SELECT id, name, path_hash FROM test_cases')
         testcases = cursor.fetchall()
         
         details = []
         for tc in testcases:
             name = tc['name']
-            path_hash = tc['path_hash']
+            testcase_id = tc['id']
             
             # 该测试用例覆盖的唯一行数（去重）
             cursor.execute('''
                 SELECT COUNT(DISTINCT file_path || ":" || line_number) as count
                 FROM source_coverage
-                WHERE path_hash = ?
-            ''', (path_hash,))
+                WHERE testcase_id = ?
+            ''', (testcase_id,))
             unique_lines = cursor.fetchone()['count']
             
             # 该测试用例覆盖的总行数（包含重复，即 source_coverage 记录数）
             cursor.execute('''
                 SELECT COUNT(*) as count
                 FROM source_coverage
-                WHERE path_hash = ?
-            ''', (path_hash,))
+                WHERE testcase_id = ?
+            ''', (testcase_id,))
             total_lines = cursor.fetchone()['count']
             
             details.append({
@@ -338,21 +345,22 @@ class CoverageDatabase:
         cursor = self.conn.cursor()
         
         # 获取测试用例信息
-        cursor.execute('SELECT name, path_hash FROM test_cases WHERE name = ?', (testcase_name,))
+        cursor.execute('SELECT id, name, path_hash FROM test_cases WHERE name = ?', (testcase_name,))
         row = cursor.fetchone()
         
         if not row:
             return {'error': f'Test case "{testcase_name}" not found'}
         
+        testcase_id = row['id']
         path_hash = row['path_hash']
         
-        # 获取该测试用例覆盖的所有文件行
+        # 获取该测试用例覆盖的所有文件行（使用 testcase_id 查询）
         cursor.execute('''
             SELECT file_path, line_number
             FROM source_coverage
-            WHERE path_hash = ?
+            WHERE testcase_id = ?
             ORDER BY file_path, line_number
-        ''', (path_hash,))
+        ''', (testcase_id,))
         
         files_coverage = {}
         unique_lines = set()
@@ -402,6 +410,25 @@ class CoverageDatabase:
             pc_count=row['pc_count'],
             created_at=row['created_at']
         )
+    
+    def clear_all_data(self):
+        """清空所有覆盖率数据"""
+        cursor = self.conn.cursor()
+        
+        try:
+            # 删除所有测试用例
+            cursor.execute('DELETE FROM test_cases')
+            # 删除所有路径指纹
+            cursor.execute('DELETE FROM path_fingerprints')
+            # 删除所有源码覆盖记录
+            cursor.execute('DELETE FROM source_coverage')
+            
+            self.conn.commit()
+            print("[*] 已清空数据库中的所有数据")
+        except sqlite3.Error as e:
+            print(f"[!] 清空数据库失败：{e}")
+            self.conn.rollback()
+            raise
     
     def close(self):
         """关闭数据库连接"""

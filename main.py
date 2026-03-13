@@ -204,13 +204,14 @@ def print_detailed_stats(db):
     
     # 每个测试用例的覆盖率
     print("\n【测试用例覆盖率详情】")
-    cursor.execute("SELECT name, path_hash, pc_count FROM test_cases ORDER BY name")
+    cursor.execute("SELECT id, name, path_hash, pc_count FROM test_cases ORDER BY name")
     testcases = cursor.fetchall()
     
     print(f"\n  {'测试用例':<20} {'路径 PC 数':>10} {'唯一 PC 数':>12} {'覆盖行数':>10} {'行覆盖率':>12}")
     print("  " + "-"*66)
     
     for tc in testcases:
+        testcase_id = tc['id']
         name = tc['name']
         path_hash = tc['path_hash']
         pc_count = tc['pc_count']
@@ -218,15 +219,15 @@ def print_detailed_stats(db):
         cursor.execute("""
             SELECT COUNT(DISTINCT file_path || ':' || line_number)
             FROM source_coverage
-            WHERE path_hash = ?
-        """, (path_hash,))
+            WHERE testcase_id = ?
+        """, (testcase_id,))
         covered_lines = cursor.fetchone()[0]
         
         cursor.execute("""
             SELECT COUNT(DISTINCT pc_address)
             FROM source_coverage
-            WHERE path_hash = ? AND pc_address IS NOT NULL AND pc_address != ''
-        """, (path_hash,))
+            WHERE testcase_id = ? AND pc_address IS NOT NULL AND pc_address != ''
+        """, (testcase_id,))
         unique_pcs = cursor.fetchone()[0]
         
         tc_line_coverage = (covered_lines / verifier_total_lines) * 100 if verifier_total_lines > 0 else 0.0
