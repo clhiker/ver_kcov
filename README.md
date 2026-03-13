@@ -87,11 +87,9 @@ python3 main.py analyze --report
 - 测试用例信息
 - 路径指纹
 - 源码覆盖信息
-- 等价关系
 
 ### 覆盖率分析
 - 路径分布统计
-- 等价测试用例识别
 - 未覆盖行检测
 
 ## 命令行接口
@@ -102,7 +100,6 @@ python3 main.py run
 
 # 分析数据
 python3 main.py analyze --report    # 生成报告
-python3 main.py analyze --equivalent # 查看等价类
 
 # 查询信息
 python3 main.py query -f kernel/bpf/verifier.c  # 查询文件
@@ -152,8 +149,6 @@ Verifier 覆盖率分析报告
 覆盖文件数：3
 覆盖行数：1500
 覆盖率：45.5%
-
-等价测试用例组数：10
 ============================================================
 ```
 

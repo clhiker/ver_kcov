@@ -54,7 +54,8 @@ class PCResolver:
             {pc_address: SourceLocation} 查找表
         """
         if cache_file and os.path.exists(cache_file):
-            return self._load_lookup_table(cache_file)
+            self._lookup_table = self._load_lookup_table(cache_file)
+            return self._lookup_table
         
         # 准备 llvm-symbolizer 输入
         pc_list = sorted(list(unique_pcs))

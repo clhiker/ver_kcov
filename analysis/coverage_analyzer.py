@@ -21,9 +21,6 @@ class CoverageReport:
     total_lines: int = 0  # 需要外部提供
     coverage_percentage: float = 0.0
     
-    # 等价测试用例分组
-    equivalent_groups: Dict[str, List[str]] = None
-    
     # 未覆盖的行
     uncovered_lines: Dict[str, List[int]] = None
     
@@ -35,7 +32,6 @@ class CoverageReport:
             'covered_lines': self.covered_lines,
             'total_lines': self.total_lines,
             'coverage_percentage': self.coverage_percentage,
-            'equivalent_groups': self.equivalent_groups or {},
             'uncovered_lines': self.uncovered_lines or {}
         }
 
@@ -65,9 +61,6 @@ class CoverageAnalyzer:
             covered_files=stats['covered_files'],
             covered_lines=stats['covered_lines']
         )
-        
-        # 获取等价测试用例分组
-        report.equivalent_groups = self.db.get_equivalent_test_cases()
         
         # 如果提供了源文件，计算未覆盖的行
         if source_files:
@@ -149,12 +142,18 @@ class CoverageAnalyzer:
         Returns:
             [(path_hash, test_case_count)]
         """
-        equivalent_groups = self.db.get_equivalent_test_cases()
+        all_paths = self.db.get_all_unique_paths()
+        
+        # 统计每个路径的测试用例数
+        path_counts = {}
+        for path_hash, pcs in all_paths.items():
+            test_cases = self.db.get_test_cases_by_path_hash(path_hash)
+            path_counts[path_hash] = len(test_cases)
         
         # 按测试用例数排序
         sorted_paths = sorted(
-            equivalent_groups.items(),
-            key=lambda x: len(x[1]),
+            path_counts.items(),
+            key=lambda x: x[1],
             reverse=True
         )
         
@@ -168,13 +167,13 @@ class CoverageAnalyzer:
             [path_hash]
         """
         all_paths = self.db.get_all_unique_paths()
-        equivalent_groups = self.db.get_equivalent_test_cases()
         
         # 只出现一次的路径
-        cold_paths = [
-            path_hash for path_hash in all_paths.keys()
-            if path_hash not in equivalent_groups
-        ]
+        cold_paths = []
+        for path_hash, pcs in all_paths.items():
+            test_cases = self.db.get_test_cases_by_path_hash(path_hash)
+            if len(test_cases) <= 1:
+                cold_paths.append(path_hash)
         
         return cold_paths[:top_n]
     
@@ -243,8 +242,4 @@ class CoverageAnalyzer:
                 f.write(f"覆盖率：{report.coverage_percentage:.2f}%\n")
             
             f.write("\n")
-            
-            if report.equivalent_groups:
-                f.write(f"等价测试用例组数：{len(report.equivalent_groups)}\n")
-            
-            f.write("\n" + "="*60 + "\n")
+            f.write("="*60 + "\n")

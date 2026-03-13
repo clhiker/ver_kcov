@@ -36,14 +36,6 @@ def cmd_analyze(args):
             # 生成报告
             report = analyzer.generate_report()
             print_report(report)
-        
-        if args.equivalent:
-            # 显示等价测试用例
-            equiv = db.get_equivalent_test_cases()
-            print(f"\n等价测试用例分组：{len(equiv)} 组")
-            for path_hash, test_cases in list(equiv.items())[:5]:
-                print(f"  {path_hash}: {len(test_cases)} 个用例")
-                print(f"    示例：{test_cases[0]}")
 
 
 def cmd_query(args):
@@ -99,11 +91,6 @@ def print_report(report):
     if report.total_lines > 0:
         print(f"覆盖率：{report.coverage_percentage:.2f}%")
     
-    if report.equivalent_groups:
-        print(f"\n等价测试用例组数：{len(report.equivalent_groups)}")
-        total_redundant = sum(len(cases) - 1 for cases in report.equivalent_groups.values())
-        print(f"可精简测试用例数：{total_redundant}")
-    
     print("="*60)
 
 
@@ -125,8 +112,6 @@ def main():
     analyze_parser = subparsers.add_parser('analyze', help='分析覆盖率数据')
     analyze_parser.add_argument('--report', action='store_true',
                                help='生成覆盖率报告')
-    analyze_parser.add_argument('--equivalent', action='store_true',
-                               help='显示等价测试用例')
     analyze_parser.set_defaults(func=cmd_analyze)
     
     # query 命令

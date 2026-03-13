@@ -221,12 +221,22 @@ class CoverageDatabase:
         return {row['path_hash']: json.loads(row['pcs']) for row in cursor.fetchall()}
     
     def get_covered_lines_by_file(self, file_path: str) -> Set[int]:
-        """获取指定文件被覆盖的行号"""
+        """获取指定文件被覆盖的行号（支持相对路径和模糊匹配）"""
         cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT DISTINCT line_number FROM source_coverage 
-            WHERE file_path = ?
-        ''', (file_path,))
+        
+        # 支持模糊匹配：如果输入的是相对路径，匹配文件路径的结尾部分
+        if not file_path.startswith('/'):
+            # 相对路径，使用 LIKE 匹配
+            cursor.execute('''
+                SELECT DISTINCT line_number FROM source_coverage 
+                WHERE file_path LIKE ?
+            ''', (f'%{file_path}',))
+        else:
+            # 绝对路径，精确匹配
+            cursor.execute('''
+                SELECT DISTINCT line_number FROM source_coverage 
+                WHERE file_path = ?
+            ''', (file_path,))
         
         return {row['line_number'] for row in cursor.fetchall()}
     
@@ -259,25 +269,6 @@ class CoverageDatabase:
         stats['covered_files'] = cursor.fetchone()['count']
         
         return stats
-    
-    def get_equivalent_test_cases(self) -> Dict[str, List[str]]:
-        """
-        获取等价测试用例分组
-        返回：{path_hash: [test_case_names]}
-        """
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT path_hash, GROUP_CONCAT(name) as names 
-            FROM test_cases 
-            GROUP BY path_hash
-            HAVING COUNT(*) > 1
-        ''')
-        
-        result = {}
-        for row in cursor.fetchall():
-            result[row['path_hash']] = row['names'].split(',')
-        
-        return result
     
     def find_test_cases_for_line(self, file_path: str, line_number: int) -> List[str]:
         """找到覆盖指定源码行的所有测试用例"""
