@@ -50,3 +50,4 @@ cache/
 
 # Configuration overrides
 config/*.local.yaml
+vmlinux

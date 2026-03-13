@@ -209,45 +209,6 @@ class CoverageAnalyzer:
             'covered_line_numbers': sorted(list(covered_lines))
         }
     
-    def suggest_test_suite_reduction(self) -> dict:
-        """
-        建议测试集瘦身方案
-        
-        Returns:
-            瘦身建议
-        """
-        equivalent_groups = self.db.get_equivalent_test_cases()
-        
-        if not equivalent_groups:
-            return {
-                'reduction_possible': False,
-                'message': '没有发现等价的测试用例'
-            }
-        
-        # 每个等价类保留一个代表
-        representatives = {}
-        redundant = []
-        
-        for path_hash, test_cases in equivalent_groups.items():
-            # 保留第一个作为代表
-            representatives[path_hash] = test_cases[0]
-            # 其余的都是冗余的
-            redundant.extend(test_cases[1:])
-        
-        total = sum(len(cases) for cases in equivalent_groups.values())
-        kept = len(representatives)
-        removed = len(redundant)
-        
-        return {
-            'reduction_possible': True,
-            'original_count': total,
-            'reduced_count': kept,
-            'removable_count': removed,
-            'reduction_rate': (removed / total * 100) if total > 0 else 0,
-            'representatives': representatives,
-            'redundant_tests': redundant
-        }
-    
     def export_report(self, output_path: str, format: str = 'json'):
         """
         导出报告
@@ -285,8 +246,5 @@ class CoverageAnalyzer:
             
             if report.equivalent_groups:
                 f.write(f"等价测试用例组数：{len(report.equivalent_groups)}\n")
-                reduction = self.suggest_test_suite_reduction()
-                if reduction['reduction_possible']:
-                    f.write(f"可精简测试用例数：{reduction['removable_count']} ({reduction['reduction_rate']:.1f}%)\n")
             
             f.write("\n" + "="*60 + "\n")

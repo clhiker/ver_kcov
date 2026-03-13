@@ -41,6 +41,9 @@ class Config:
     # 并行工作进程数
     parallel_workers: int = 4
     
+    # 是否使用 llvm-symbolizer（默认 True，使用 llvm-symbolizer）
+    use_llvm_symbolizer: bool = True
+    
     @classmethod
     def from_yaml(cls, config_path: str) -> 'Config':
         """从 YAML 文件加载配置"""
@@ -81,6 +84,8 @@ class Config:
                     config.log_level = data['log_level']
                 if 'parallel_workers' in data:
                     config.parallel_workers = data['parallel_workers']
+                if 'use_llvm_symbolizer' in data:
+                    config.use_llvm_symbolizer = data['use_llvm_symbolizer']
         
         return config
     
@@ -97,7 +102,8 @@ class Config:
             'db_path': self.db_path,
             'lookup_table_cache': self.lookup_table_cache,
             'log_level': self.log_level,
-            'parallel_workers': self.parallel_workers
+            'parallel_workers': self.parallel_workers,
+            'use_llvm_symbolizer': self.use_llvm_symbolizer
         }
         
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)

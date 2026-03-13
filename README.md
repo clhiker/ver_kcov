@@ -25,20 +25,32 @@ gcc -o kcov_runner kcov_runner.c -lbpf
 ### 3. 配置 Verifier 地址范围
 
 ```bash
-# 提取符号地址
-./scripts/extract_symbols.sh ./vmlinux
-
-# 编辑配置文件
-vim config/kcov_config.yaml
+# 自动提取符号地址并更新配置文件
+python3 scripts/auto_config.py ./vmlinux ./config/kcov_config.yaml
 ```
 
-配置示例：
+脚本会自动：
+- 从 vmlinux 提取 bpf_check 等符号地址
+- 自动计算 Verifier 地址范围
+- 更新配置文件 `config/kcov_config.yaml`
+
+配置示例（自动配置后）：
 ```yaml
 vmlinux_path: "./vmlinux"
 kcov_runner_path: "./kcov_runner"
-verifier_start_addr: "0xffffffff81dcd390"  # 根据 extract_symbols.sh 输出调整
-verifier_end_addr: "0xffffffff81e17e30"
+verifier_start_addr: "0xffffffff81dcd390"  # 自动提取
+verifier_end_addr: "0xffffffff81e17390"    # 自动计算
 testcase_dir: "./testcases"
+```
+
+**手动配置（可选）**：
+如果自动配置失败，可以手动提取地址：
+```bash
+# 查看符号地址
+nm -n vmlinux | grep bpf_check
+
+# 手动编辑配置文件
+vim config/kcov_config.yaml
 ```
 
 ### 4. 运行覆盖率采集
@@ -56,9 +68,6 @@ python3 main.py run -t ./my_testcases
 ```bash
 # 查看覆盖率报告
 python3 main.py analyze --report
-
-# 获取测试集瘦身建议
-python3 main.py analyze --reduce
 ```
 
 ## 核心功能
@@ -70,7 +79,7 @@ python3 main.py analyze --reduce
 
 ### 全局地址解析
 - 收集所有测试用例的唯一 PC 地址
-- 一次性批量运行 `addr2line`
+- 一次性批量运行 `llvm-symbolizer`
 - 建立 O(1) 查找表
 
 ### 数据库存储
@@ -83,7 +92,6 @@ python3 main.py analyze --reduce
 ### 覆盖率分析
 - 路径分布统计
 - 等价测试用例识别
-- 测试集瘦身建议
 - 未覆盖行检测
 
 ## 命令行接口
@@ -95,7 +103,6 @@ python3 main.py run
 # 分析数据
 python3 main.py analyze --report    # 生成报告
 python3 main.py analyze --equivalent # 查看等价类
-python3 main.py analyze --reduce     # 瘦身建议
 
 # 查询信息
 python3 main.py query -f kernel/bpf/verifier.c  # 查询文件
@@ -124,7 +131,7 @@ ver_kcov/
 │   └── config.py              # 配置管理
 ├── scripts/                   # 辅助脚本
 │   ├── extract_symbols.sh     # 符号地址提取
-│   └── batch_addr2line.py     # 批量地址解析
+│   └── llvm_symbolizer.py     # 批量地址解析
 ├── config/                    # 配置文件
 │   └── kcov_config.yaml       # 主配置
 ├── testcases/                 # 测试用例目录
@@ -147,26 +154,10 @@ Verifier 覆盖率分析报告
 覆盖率：45.5%
 
 等价测试用例组数：10
-可精简测试用例数：40 (40%)
 ============================================================
 ```
 
 ## 高级用法
-
-### 测试集瘦身
-
-```python
-from analysis.coverage_analyzer import CoverageAnalyzer
-from core.coverage_db import CoverageDatabase
-
-with CoverageDatabase("kcov_coverage.db") as db:
-    analyzer = CoverageAnalyzer(db)
-    reduction = analyzer.suggest_test_suite_reduction()
-    
-    print(f"原始用例数：{reduction['original_count']}")
-    print(f"精简后：{reduction['reduced_count']}")
-    print(f"可移除：{reduction['removable_count']} ({reduction['reduction_rate']:.1f}%)")
-```
 
 ### 增量测试识别
 
@@ -178,6 +169,20 @@ with CoverageDatabase("kcov_coverage.db") as db:
     test_cases = db.find_test_cases_for_line("verifier.c", 1234)
     print(f"需要回归测试的用例：{test_cases}")
 ```
+
+## 支持的环境
+
+本框架支持以下两种运行环境：
+
+### 1. 宿主机（WSL2）
+- 需要自定义编译的内核（启用 `CONFIG_KCOV=y`）
+- 直接运行，性能更好
+- 推荐用于日常开发和测试
+
+### 2. QEMU 虚拟机
+- 适用于需要更完整内核模拟的场景
+- 需要配置虚拟机和内核镜像
+- 推荐用于深度调试和验证
 
 ## 故障排查
 
@@ -208,7 +213,15 @@ zgrep KCOV /proc/config.gz
 #define KCOV_BUFFER_SIZE (2 << 20)  // 增大到 2MB
 ```
 
-### addr2line 解析失败
+**问题 4: KCOV_DISABLE 失败**
+
+```
+[ERROR] KCOV_DISABLE 失败：Invalid argument
+```
+
+这是**正常现象**。eBPF 程序加载后会触发内核 KCOV 插桩，即使调用 `KCOV_DISABLE` ioctl，内核仍可能继续收集。程序会正确保存已收集的 PC 数据，不影响使用。
+
+### llvm-symbolizer 解析失败
 
 ```bash
 # 检查 vmlinux 是否包含调试信息
@@ -216,7 +229,7 @@ file vmlinux
 # 应该显示 "with debug_info"
 
 # 手动测试
-addr2line -e vmlinux -f 0xffffffff81dcd390
+llvm-symbolizer -e vmlinux 0xffffffff81dcd390
 ```
 
 ## 与现有脚本兼容

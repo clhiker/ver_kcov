@@ -34,6 +34,8 @@ class PCResolver:
         self.config = config
         self.vmlinux_path = config.vmlinux_path
         self._lookup_table: Dict[str, SourceLocation] = {}
+        # 始终使用 llvm-symbolizer
+        self.use_llvm = True
         
     def build_lookup_table(self, unique_pcs: Set[str], cache_file: Optional[str] = None) -> Dict[str, SourceLocation]:
         """
@@ -41,7 +43,7 @@ class PCResolver:
         
         优化策略：
         1. 收集所有唯一 PC 地址
-        2. 一次性批量运行 addr2line
+        2. 一次性批量运行 llvm-symbolizer
         3. 建立 O(1) 查找表
         
         Args:
@@ -54,11 +56,11 @@ class PCResolver:
         if cache_file and os.path.exists(cache_file):
             return self._load_lookup_table(cache_file)
         
-        # 准备 addr2line 输入
+        # 准备 llvm-symbolizer 输入
         pc_list = sorted(list(unique_pcs))
         
-        # 批量运行 addr2line
-        lookup_table = self._run_batch_addr2line(pc_list)
+        # 批量运行 llvm-symbolizer
+        lookup_table = self._run_batch_llvm_symbolizer(pc_list)
         
         # 保存到缓存
         if cache_file:
@@ -67,85 +69,116 @@ class PCResolver:
         self._lookup_table = lookup_table
         return lookup_table
     
-    def _run_batch_addr2line(self, pcs: List[str]) -> Dict[str, SourceLocation]:
-        """批量运行 addr2line"""
+    def _run_batch_llvm_symbolizer(self, pcs: List[str]) -> Dict[str, SourceLocation]:
+        """批量运行 llvm-symbolizer，分批处理避免超时"""
         if not pcs:
             return {}
         
-        # 准备输入内容
-        input_text = "\n".join(pcs)
+        # 分批处理，每批 10000 个地址
+        BATCH_SIZE = 10000
+        lookup_table = {}
+        total = len(pcs)
         
-        try:
-            # 运行 addr2line
-            # -e: 指定可执行文件
-            # -f: 显示函数名
-            # -i: 显示 inline 信息
-            # -p: 简洁输出格式
-            result = subprocess.run(
-                ['addr2line', '-e', self.vmlinux_path, '-f', '-i', '-p'],
-                input=input_text,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+        print(f"[*] 开始解析 {total} 个 PC 地址（使用 llvm-symbolizer，分批处理，每批{BATCH_SIZE}个）...")
+        
+        for i in range(0, total, BATCH_SIZE):
+            batch = pcs[i:i + BATCH_SIZE]
+            batch_num = i // BATCH_SIZE + 1
+            total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
             
-            # 解析输出
-            lookup_table = {}
-            output_lines = result.stdout.strip().split('\n')
+            print(f"\r[*] 处理批次 {batch_num}/{total_batches}...", end='', flush=True)
             
-            for pc, output_line in zip(pcs, output_lines):
-                location = self._parse_addr2line_output(pc, output_line)
-                if location:
-                    lookup_table[pc] = location
+            # 准备输入内容
+            input_text = "\n".join(batch)
             
-            return lookup_table
-            
-        except subprocess.CalledProcessError as e:
-            print(f"[!] addr2line failed: {e.stderr}")
-            return {}
-        except FileNotFoundError:
-            print("[!] addr2line not found, please install binutils")
-            return {}
+            try:
+                # 使用 llvm-symbolizer（性能更好）
+                result = subprocess.run(
+                    ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=GNU'],
+                    input=input_text,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=300
+                )
+                # 解析 llvm-symbolizer 输出（每两行一组：函数名 + 文件：行号）
+                output_lines = result.stdout.strip().split('\n')
+                batch_results = self._parse_llvm_output(batch, output_lines)
+                
+                lookup_table.update(batch_results)
+                
+            except subprocess.TimeoutExpired:
+                print(f"\n[!] 批次 {batch_num} 超时，跳过...")
+                continue
+            except subprocess.CalledProcessError as e:
+                print(f"\n[!] 批次 {batch_num} 失败：{e.stderr}")
+                continue
+            except FileNotFoundError:
+                print(f"\n[!] llvm-symbolizer 未找到")
+                return {}
+        
+        print(f"\r[*] PC 地址解析完成，共解析 {len(lookup_table)} 个地址")
+        return lookup_table
     
-    def _parse_addr2line_output(self, pc: str, output: str) -> Optional[SourceLocation]:
+    def _parse_llvm_output(self, pcs: List[str], output_lines: List[str]) -> Dict[str, SourceLocation]:
         """
-        解析 addr2line 输出
+        解析 llvm-symbolizer 输出
         
-        格式：function_name file:line 或 function_name ??:?
+        格式：每两行一组
+        第 1 行：函数名
+        第 2 行：文件路径：行号
         """
-        if not output or output == "?? ??:0":
-            return None
+        lookup_table = {}
+        i = 0
+        pc_idx = 0
         
-        try:
-            # 解析格式："func_name file:line" 或 "func_name file:line (inline)"
-            parts = output.split(' ', 1)
-            if len(parts) != 2:
-                return None
+        while i < len(output_lines) and pc_idx < len(pcs):
+            pc = pcs[pc_idx]
             
-            func_name = parts[0]
-            location_part = parts[1]
+            # 获取函数名和位置
+            func_name = output_lines[i].strip() if i < len(output_lines) else ""
+            i += 1
             
-            # 处理 inline 信息
-            if '(inline)' in location_part:
-                location_part = location_part.replace('(inline)', '').strip()
+            if i >= len(output_lines):
+                break
+                
+            location_line = output_lines[i].strip()
+            i += 1
             
-            # 解析 file:line
-            if ':' in location_part:
-                file_path, line_str = location_part.rsplit(':', 1)
-                line_num = int(line_str) if line_str.isdigit() else 0
-            else:
-                file_path = location_part
-                line_num = 0
+            # 跳过空结果
+            if not location_line or location_line == "??:0":
+                pc_idx += 1
+                continue
             
-            return SourceLocation(
-                file=file_path,
-                line=line_num,
-                function=func_name,
-                address=pc
-            )
-        except Exception as e:
-            print(f"[!] Failed to parse addr2line output '{output}': {e}")
-            return None
+            # 解析文件路径和行号
+            try:
+                if ':' in location_line:
+                    # 查找最后一个冒号（处理 Windows 路径 C:\\... 的情况）
+                    last_colon = location_line.rfind(':')
+                    if last_colon > 0:
+                        file_path = location_line[:last_colon]
+                        line_str = location_line[last_colon + 1:]
+                        line_num = int(line_str) if line_str.isdigit() else 0
+                    else:
+                        file_path = location_line
+                        line_num = 0
+                else:
+                    file_path = location_line
+                    line_num = 0
+                
+                if func_name and file_path:
+                    lookup_table[pc] = SourceLocation(
+                        file=file_path,
+                        line=line_num,
+                        function=func_name,
+                        address=pc
+                    )
+            except Exception as e:
+                print(f"\n[!] 解析 llvm 输出失败：{e}")
+            
+            pc_idx += 1
+        
+        return lookup_table
     
     def _save_lookup_table(self, lookup_table: Dict[str, SourceLocation], cache_file: str):
         """保存查找表到文件"""
@@ -181,7 +214,7 @@ class PCResolver:
     
     def resolve_path(self, pcs: List[str]) -> List[SourceLocation]:
         """
-        解析整个路径的源码位置
+        解析整个路径的源码位置，带进度显示
         
         Args:
             pcs: PC 序列
@@ -190,30 +223,55 @@ class PCResolver:
             SourceLocation 列表
         """
         locations = []
-        for pc in pcs:
+        total = len(pcs)
+        
+        for i, pc in enumerate(pcs, 1):
             if pc in self._lookup_table:
                 locations.append(self._lookup_table[pc])
             else:
                 # 如果不在查找表中，单独解析
+                if i % 10 == 0 or i == total:  # 每 10 个显示一次进度
+                    print(f"\r[*] 解析 PC {i}/{total}...", end='', flush=True)
                 loc = self._resolve_single_pc(pc)
                 if loc:
                     locations.append(loc)
+        
+        if total > 0:
+            print(f"\r[*] 路径解析完成，共 {len(locations)} 个位置")
+        
         return locations
     
     def _resolve_single_pc(self, pc: str) -> Optional[SourceLocation]:
-        """单独解析一个 PC 地址"""
+        """单独解析一个 PC 地址（使用 llvm-symbolizer）"""
         try:
             result = subprocess.run(
-                ['addr2line', '-e', self.vmlinux_path, '-f', '-i', '-p', pc],
+                ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=GNU'],
+                input=pc,
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=30
             )
             
             if result.returncode == 0:
-                return self._parse_addr2line_output(pc, result.stdout.strip())
+                output_lines = result.stdout.strip().split('\n')
+                if len(output_lines) >= 2:
+                    func_name = output_lines[0]
+                    location_line = output_lines[1]
+                    if ':' in location_line and location_line != "??:0":
+                        last_colon = location_line.rfind(':')
+                        file_path = location_line[:last_colon]
+                        line_str = location_line[last_colon + 1:]
+                        line_num = int(line_str) if line_str.isdigit() else 0
+                        return SourceLocation(
+                            file=file_path,
+                            line=line_num,
+                            function=func_name,
+                            address=pc
+                        )
+        except subprocess.TimeoutExpired:
+            print(f"\n[!] llvm-symbolizer 超时：{pc}")
         except Exception as e:
-            print(f"[!] Failed to resolve {pc}: {e}")
+            print(f"\n[!] 解析失败 {pc}: {e}")
         
         return None
     

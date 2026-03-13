@@ -1,34 +1,12 @@
-# Verifier 覆盖率采集框架配置文件
-
-# vmlinux 文件路径
-vmlinux_path: "../vmlinux"
-
-# KCOV 采集程序路径
-kcov_runner_path: "../kcov_runner"
-
-# KCOV 采集超时时间（秒）
+db_path: ../kcov_coverage.db
+kcov_runner_path: ../kcov_runner
 kcov_timeout: 30
-
-# Verifier 地址范围（通过 nm vmlinux | grep bpf_check 获取）
-# 起始地址：bpf_check 函数开始
-# 结束地址：do_check 函数之后（下一个函数之前）
-verifier_start_addr: "0xffffffff81dcd390"
-verifier_end_addr: "0xffffffff81e17e30"
-
-# 测试用例目录
-testcase_dir: "../testcases"
-
-# 结果输出目录
-result_dir: "../path_results"
-
-# 数据库路径
-db_path: "../kcov_coverage.db"
-
-# PC 查找表缓存文件
-lookup_table_cache: "../cache/pc_lookup_table.txt"
-
-# 日志级别：DEBUG, INFO, WARNING, ERROR
-log_level: "INFO"
-
-# 并行工作进程数
+log_level: INFO
+lookup_table_cache: ../cache/pc_lookup_table.txt
 parallel_workers: 4
+result_dir: ../path_results
+testcase_dir: ../testcases
+use_llvm_symbolizer: true
+verifier_end_addr: '0xffffffff81e17390'
+verifier_start_addr: '0xffffffff81dcd390'
+vmlinux_path: ../vmlinux

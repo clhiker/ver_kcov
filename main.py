@@ -44,15 +44,6 @@ def cmd_analyze(args):
             for path_hash, test_cases in list(equiv.items())[:5]:
                 print(f"  {path_hash}: {len(test_cases)} 个用例")
                 print(f"    示例：{test_cases[0]}")
-        
-        if args.reduce:
-            # 测试集瘦身建议
-            reduction = analyzer.suggest_test_suite_reduction()
-            if reduction['reduction_possible']:
-                print(f"\n测试集瘦身建议:")
-                print(f"  原始用例数：{reduction['original_count']}")
-                print(f"  精简后：{reduction['reduced_count']}")
-                print(f"  可移除：{reduction['removable_count']} ({reduction['reduction_rate']:.1f}%)")
 
 
 def cmd_query(args):
@@ -132,12 +123,10 @@ def main():
     
     # analyze 命令
     analyze_parser = subparsers.add_parser('analyze', help='分析覆盖率数据')
-    analyze_parser.add_argument('--report', '-r', action='store_true',
-                               help='生成报告')
-    analyze_parser.add_argument('--equivalent', '-e', action='store_true',
+    analyze_parser.add_argument('--report', action='store_true',
+                               help='生成覆盖率报告')
+    analyze_parser.add_argument('--equivalent', action='store_true',
                                help='显示等价测试用例')
-    analyze_parser.add_argument('--reduce', action='store_true',
-                               help='测试集瘦身建议')
     analyze_parser.set_defaults(func=cmd_analyze)
     
     # query 命令
