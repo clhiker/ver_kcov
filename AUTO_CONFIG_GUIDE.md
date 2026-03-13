@@ -89,7 +89,7 @@ verifier_end_addr: "0xffffffff81e17390"    # 估算的结束地址
 # 测试用例目录
 testcase_dir: "./testcases"
 
-# 使用 llvm-symbolizer（性能更好）
+# 使用 llvm-symbolizer
 use_llvm_symbolizer: true
 ```
 

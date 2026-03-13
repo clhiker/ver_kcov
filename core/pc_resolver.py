@@ -34,7 +34,6 @@ class PCResolver:
         self.config = config
         self.vmlinux_path = config.vmlinux_path
         self._lookup_table: Dict[str, SourceLocation] = {}
-        # 始终使用 llvm-symbolizer
         self.use_llvm = True
         
     def build_lookup_table(self, unique_pcs: Set[str], cache_file: Optional[str] = None) -> Dict[str, SourceLocation]:
@@ -80,7 +79,7 @@ class PCResolver:
         lookup_table = {}
         total = len(pcs)
         
-        print(f"[*] 开始解析 {total} 个 PC 地址（使用 llvm-symbolizer，分批处理，每批{BATCH_SIZE}个）...")
+        print(f"[*] 开始解析 {total} 个 PC 地址（分批处理，每批{BATCH_SIZE}个）...")
         
         for i in range(0, total, BATCH_SIZE):
             batch = pcs[i:i + BATCH_SIZE]
@@ -93,7 +92,6 @@ class PCResolver:
             input_text = "\n".join(batch)
             
             try:
-                # 使用 llvm-symbolizer（性能更好）
                 result = subprocess.run(
                     ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=GNU'],
                     input=input_text,
@@ -243,7 +241,7 @@ class PCResolver:
         return locations
     
     def _resolve_single_pc(self, pc: str) -> Optional[SourceLocation]:
-        """单独解析一个 PC 地址（使用 llvm-symbolizer）"""
+        """单独解析一个 PC 地址"""
         try:
             result = subprocess.run(
                 ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=GNU'],

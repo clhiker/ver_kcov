@@ -260,7 +260,7 @@ class CoverageDatabase:
         cursor.execute('SELECT COUNT(*) as count FROM path_fingerprints')
         stats['unique_paths'] = cursor.fetchone()['count']
         
-        # 覆盖的源码行数
+        # 覆盖的源码行数（去重后的总数）
         cursor.execute('SELECT COUNT(DISTINCT file_path || ":" || line_number) as count FROM source_coverage')
         stats['covered_lines'] = cursor.fetchone()['count']
         
@@ -268,7 +268,117 @@ class CoverageDatabase:
         cursor.execute('SELECT COUNT(DISTINCT file_path) as count FROM source_coverage')
         stats['covered_files'] = cursor.fetchone()['count']
         
+        # 每个测试用例的覆盖行数
+        stats['testcase_coverage'] = self.get_testcase_coverage_details()
+        
         return stats
+    
+    def get_testcase_coverage_details(self) -> List[Dict]:
+        """
+        获取每个测试用例的覆盖详情
+        
+        Returns:
+            [{'name': str, 'covered_lines': int, 'unique_lines': int}]
+            - covered_lines: 该测试用例覆盖的总行数（包含重复）
+            - unique_lines: 该测试用例唯一覆盖的行数（去重）
+        """
+        cursor = self.conn.cursor()
+        
+        # 获取所有测试用例
+        cursor.execute('SELECT name, path_hash FROM test_cases')
+        testcases = cursor.fetchall()
+        
+        details = []
+        for tc in testcases:
+            name = tc['name']
+            path_hash = tc['path_hash']
+            
+            # 该测试用例覆盖的唯一行数（去重）
+            cursor.execute('''
+                SELECT COUNT(DISTINCT file_path || ":" || line_number) as count
+                FROM source_coverage
+                WHERE path_hash = ?
+            ''', (path_hash,))
+            unique_lines = cursor.fetchone()['count']
+            
+            # 该测试用例覆盖的总行数（包含重复，即 source_coverage 记录数）
+            cursor.execute('''
+                SELECT COUNT(*) as count
+                FROM source_coverage
+                WHERE path_hash = ?
+            ''', (path_hash,))
+            total_lines = cursor.fetchone()['count']
+            
+            details.append({
+                'name': name,
+                'covered_lines': total_lines,
+                'unique_lines': unique_lines
+            })
+        
+        return sorted(details, key=lambda x: x['unique_lines'], reverse=True)
+    
+    def get_testcase_detailed_coverage(self, testcase_name: str) -> Dict:
+        """
+        获取指定测试用例的详细覆盖信息（具体到每个文件的哪些行）
+        
+        Args:
+            testcase_name: 测试用例名称
+            
+        Returns:
+            {
+                'name': str,
+                'path_hash': str,
+                'total_unique_lines': int,
+                'files': {
+                    file_path: [line1, line2, ...],
+                    ...
+                }
+            }
+        """
+        cursor = self.conn.cursor()
+        
+        # 获取测试用例信息
+        cursor.execute('SELECT name, path_hash FROM test_cases WHERE name = ?', (testcase_name,))
+        row = cursor.fetchone()
+        
+        if not row:
+            return {'error': f'Test case "{testcase_name}" not found'}
+        
+        path_hash = row['path_hash']
+        
+        # 获取该测试用例覆盖的所有文件行
+        cursor.execute('''
+            SELECT file_path, line_number
+            FROM source_coverage
+            WHERE path_hash = ?
+            ORDER BY file_path, line_number
+        ''', (path_hash,))
+        
+        files_coverage = {}
+        unique_lines = set()
+        
+        for cov_row in cursor.fetchall():
+            file_path = cov_row['file_path']
+            line_number = cov_row['line_number']
+            
+            if file_path not in files_coverage:
+                files_coverage[file_path] = set()
+            
+            files_coverage[file_path].add(line_number)
+            unique_lines.add(f"{file_path}:{line_number}")
+        
+        # 转换为排序后的列表
+        files_coverage = {
+            file_path: sorted(list(lines))
+            for file_path, lines in files_coverage.items()
+        }
+        
+        return {
+            'name': testcase_name,
+            'path_hash': path_hash,
+            'total_unique_lines': len(unique_lines),
+            'files': files_coverage
+        }
     
     def find_test_cases_for_line(self, file_path: str, line_number: int) -> List[str]:
         """找到覆盖指定源码行的所有测试用例"""

@@ -124,7 +124,24 @@ class CoveragePipeline:
         print(f"[*] 成功：{self.stats['successful']}")
         print(f"[*] 失败：{self.stats['failed']}")
         print(f"[*] 唯一路径数：{self.stats['unique_paths']}")
-        print(f"[*] 覆盖源码行数：{self.stats['covered_lines']}")
+        print(f"[*] 覆盖源码行数（去重后）：{self.stats['covered_lines']}")
+        
+        # 显示每个测试用例的覆盖详情
+        db_stats = self.db.get_coverage_statistics()
+        testcase_coverage = db_stats.get('testcase_coverage', [])
+        if testcase_coverage:
+            print("\n" + "-"*60)
+            print("[*] 各测试用例覆盖详情")
+            print("-"*60)
+            print(f"{'测试用例':<40} {'覆盖行数':<12} {'唯一行数':<12}")
+            print("-"*60)
+            for tc in testcase_coverage:
+                name = tc['name']
+                if len(name) > 38:
+                    name = name[:35] + "..."
+                print(f"{name:<40} {tc['covered_lines']:<12} {tc['unique_lines']:<12}")
+            print("-"*60)
+        
         print(f"[*] 耗时：{duration:.2f} 秒")
         print("="*60)
         

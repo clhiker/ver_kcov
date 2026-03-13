@@ -41,7 +41,6 @@ class Config:
     # 并行工作进程数
     parallel_workers: int = 4
     
-    # 是否使用 llvm-symbolizer（默认 True，使用 llvm-symbolizer）
     use_llvm_symbolizer: bool = True
     
     @classmethod

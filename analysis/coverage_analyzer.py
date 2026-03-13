@@ -24,6 +24,9 @@ class CoverageReport:
     # 未覆盖的行
     uncovered_lines: Dict[str, List[int]] = None
     
+    # 每个测试用例的覆盖详情
+    testcase_coverage: List[Dict] = None
+    
     def to_dict(self) -> dict:
         return {
             'total_test_cases': self.total_test_cases,
@@ -32,7 +35,8 @@ class CoverageReport:
             'covered_lines': self.covered_lines,
             'total_lines': self.total_lines,
             'coverage_percentage': self.coverage_percentage,
-            'uncovered_lines': self.uncovered_lines or {}
+            'uncovered_lines': self.uncovered_lines or {},
+            'testcase_coverage': self.testcase_coverage or []
         }
 
 
@@ -59,7 +63,8 @@ class CoverageAnalyzer:
             total_test_cases=stats['total_test_cases'],
             unique_paths=stats['unique_paths'],
             covered_files=stats['covered_files'],
-            covered_lines=stats['covered_lines']
+            covered_lines=stats['covered_lines'],
+            testcase_coverage=stats.get('testcase_coverage', [])
         )
         
         # 如果提供了源文件，计算未覆盖的行
