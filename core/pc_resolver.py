@@ -2,6 +2,7 @@
 全局 PC 地址解析模块
 批量将 PC 地址映射到源码行号
 """
+import json
 import subprocess
 import os
 from pathlib import Path
@@ -29,14 +30,16 @@ class SourceLocation:
 
 class PCResolver:
     """PC 地址解析器"""
+
+    CACHE_VERSION = "v4-json-frames-vmlinux-bound"
     
     def __init__(self, config: Config):
         self.config = config
         self.vmlinux_path = config.vmlinux_path
-        self._lookup_table: Dict[str, SourceLocation] = {}
+        self._lookup_table: Dict[str, List[SourceLocation]] = {}
         self.use_llvm = True
         
-    def build_lookup_table(self, unique_pcs: Set[str], cache_file: Optional[str] = None) -> Dict[str, SourceLocation]:
+    def build_lookup_table(self, unique_pcs: Set[str], cache_file: Optional[str] = None) -> Dict[str, List[SourceLocation]]:
         """
         构建 PC 到源码行号的查找表
         
@@ -50,7 +53,7 @@ class PCResolver:
             cache_file: 缓存文件路径
             
         Returns:
-            {pc_address: SourceLocation} 查找表
+            {pc_address: [SourceLocation, ...]} 查找表
         """
         if cache_file and os.path.exists(cache_file):
             self._lookup_table = self._load_lookup_table(cache_file)
@@ -69,7 +72,7 @@ class PCResolver:
         self._lookup_table = lookup_table
         return lookup_table
     
-    def _run_batch_llvm_symbolizer(self, pcs: List[str]) -> Dict[str, SourceLocation]:
+    def _run_batch_llvm_symbolizer(self, pcs: List[str]) -> Dict[str, List[SourceLocation]]:
         """批量运行 llvm-symbolizer，分批处理避免超时"""
         if not pcs:
             return {}
@@ -93,16 +96,14 @@ class PCResolver:
             
             try:
                 result = subprocess.run(
-                    ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=GNU'],
+                    ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=JSON'],
                     input=input_text,
                     capture_output=True,
                     text=True,
                     check=True,
                     timeout=300
                 )
-                # 解析 llvm-symbolizer 输出（每两行一组：函数名 + 文件：行号）
-                output_lines = result.stdout.strip().split('\n')
-                batch_results = self._parse_llvm_output(batch, output_lines)
+                batch_results = self._parse_llvm_output(result.stdout)
                 
                 lookup_table.update(batch_results)
                 
@@ -119,95 +120,106 @@ class PCResolver:
         print(f"\r[*] PC 地址解析完成，共解析 {len(lookup_table)} 个地址")
         return lookup_table
     
-    def _parse_llvm_output(self, pcs: List[str], output_lines: List[str]) -> Dict[str, SourceLocation]:
+    def _parse_llvm_output(self, output: str) -> Dict[str, List[SourceLocation]]:
         """
         解析 llvm-symbolizer 输出
-        
-        格式：每两行一组
-        第 1 行：函数名
-        第 2 行：文件路径：行号
+
+        使用 JSON 输出格式，避免 GNU 风格输出在 inline frame
+        场景下导致的行级错位解析。
         """
         lookup_table = {}
-        i = 0
-        pc_idx = 0
-        
-        while i < len(output_lines) and pc_idx < len(pcs):
-            pc = pcs[pc_idx]
-            
-            # 获取函数名和位置
-            func_name = output_lines[i].strip() if i < len(output_lines) else ""
-            i += 1
-            
-            if i >= len(output_lines):
-                break
-                
-            location_line = output_lines[i].strip()
-            i += 1
-            
-            # 跳过空结果
-            if not location_line or location_line == "??:0":
-                pc_idx += 1
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
                 continue
-            
-            # 解析文件路径和行号
+
             try:
-                if ':' in location_line:
-                    # 查找最后一个冒号（处理 Windows 路径 C:\\... 的情况）
-                    last_colon = location_line.rfind(':')
-                    if last_colon > 0:
-                        file_path = location_line[:last_colon]
-                        line_str = location_line[last_colon + 1:]
-                        line_num = int(line_str) if line_str.isdigit() else 0
-                    else:
-                        file_path = location_line
-                        line_num = 0
-                else:
-                    file_path = location_line
-                    line_num = 0
-                
-                if func_name and file_path:
-                    lookup_table[pc] = SourceLocation(
+                record = json.loads(line)
+            except json.JSONDecodeError as e:
+                print(f"\n[!] 解析 llvm JSON 输出失败：{e}")
+                continue
+
+            pc = record.get('Address', '')
+            symbols = record.get('Symbol') or []
+            if not pc or not symbols:
+                continue
+
+            locations = []
+            for frame in symbols:
+                file_path = frame.get('FileName', '')
+                line_num = frame.get('Line', 0) or 0
+                func_name = frame.get('FunctionName', '')
+
+                if file_path and line_num:
+                    locations.append(SourceLocation(
                         file=file_path,
                         line=line_num,
                         function=func_name,
                         address=pc
-                    )
-            except Exception as e:
-                print(f"\n[!] 解析 llvm 输出失败：{e}")
-            
-            pc_idx += 1
+                    ))
+
+            if locations:
+                lookup_table[pc] = locations
         
         return lookup_table
     
-    def _save_lookup_table(self, lookup_table: Dict[str, SourceLocation], cache_file: str):
+    def _save_lookup_table(self, lookup_table: Dict[str, List[SourceLocation]], cache_file: str):
         """保存查找表到文件"""
         Path(cache_file).parent.mkdir(parents=True, exist_ok=True)
+        vmlinux = Path(self.vmlinux_path)
+        stat = vmlinux.stat()
+        header = (
+            f"# pc_resolver_cache {self.CACHE_VERSION} "
+            f"{vmlinux.resolve()} {stat.st_mtime_ns} {stat.st_size}"
+        )
         
         with open(cache_file, 'w') as f:
-            for pc, loc in lookup_table.items():
-                f.write(f"{pc}|{loc.function}|{loc.file}|{loc.line}\n")
+            f.write(f"{header}\n")
+            for pc, locations in lookup_table.items():
+                payload = [loc.to_dict() for loc in locations]
+                f.write(f"{pc}|{json.dumps(payload, ensure_ascii=True)}\n")
     
-    def _load_lookup_table(self, cache_file: str) -> Dict[str, SourceLocation]:
+    def _load_lookup_table(self, cache_file: str) -> Dict[str, List[SourceLocation]]:
         """从缓存文件加载查找表"""
         lookup_table = {}
+        vmlinux = Path(self.vmlinux_path)
+        stat = vmlinux.stat()
+        expected_header = (
+            f"# pc_resolver_cache {self.CACHE_VERSION} "
+            f"{vmlinux.resolve()} {stat.st_mtime_ns} {stat.st_size}"
+        )
         
         with open(cache_file, 'r') as f:
+            header = f.readline().strip()
+            if header != expected_header:
+                return {}
+
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 
-                parts = line.split('|')
-                if len(parts) != 4:
+                parts = line.split('|', 1)
+                if len(parts) != 2:
                     continue
                 
-                pc, func, file_path, line_num = parts
-                lookup_table[pc] = SourceLocation(
-                    file=file_path,
-                    line=int(line_num),
-                    function=func,
-                    address=pc
-                )
+                pc, payload = parts
+                try:
+                    frames = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+
+                locations = []
+                for frame in frames:
+                    locations.append(SourceLocation(
+                        file=frame['file'],
+                        line=int(frame['line']),
+                        function=frame.get('function', ''),
+                        address=frame.get('address', pc)
+                    ))
+
+                if locations:
+                    lookup_table[pc] = locations
         
         return lookup_table
     
@@ -226,25 +238,25 @@ class PCResolver:
         
         for i, pc in enumerate(pcs, 1):
             if pc in self._lookup_table:
-                locations.append(self._lookup_table[pc])
+                locations.extend(self._lookup_table[pc])
             else:
                 # 如果不在查找表中，单独解析
                 if i % 10 == 0 or i == total:  # 每 10 个显示一次进度
                     print(f"\r[*] 解析 PC {i}/{total}...", end='', flush=True)
-                loc = self._resolve_single_pc(pc)
-                if loc:
-                    locations.append(loc)
+                resolved = self._resolve_single_pc(pc)
+                if resolved:
+                    locations.extend(resolved)
         
         if total > 0:
             print(f"\r[*] 路径解析完成，共 {len(locations)} 个位置")
         
         return locations
     
-    def _resolve_single_pc(self, pc: str) -> Optional[SourceLocation]:
+    def _resolve_single_pc(self, pc: str) -> Optional[List[SourceLocation]]:
         """单独解析一个 PC 地址"""
         try:
             result = subprocess.run(
-                ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=GNU'],
+                ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=JSON'],
                 input=pc,
                 capture_output=True,
                 text=True,
@@ -252,21 +264,8 @@ class PCResolver:
             )
             
             if result.returncode == 0:
-                output_lines = result.stdout.strip().split('\n')
-                if len(output_lines) >= 2:
-                    func_name = output_lines[0]
-                    location_line = output_lines[1]
-                    if ':' in location_line and location_line != "??:0":
-                        last_colon = location_line.rfind(':')
-                        file_path = location_line[:last_colon]
-                        line_str = location_line[last_colon + 1:]
-                        line_num = int(line_str) if line_str.isdigit() else 0
-                        return SourceLocation(
-                            file=file_path,
-                            line=line_num,
-                            function=func_name,
-                            address=pc
-                        )
+                lookup_table = self._parse_llvm_output(result.stdout)
+                return lookup_table.get(pc)
         except subprocess.TimeoutExpired:
             print(f"\n[!] llvm-symbolizer 超时：{pc}")
         except Exception as e:

@@ -1,234 +1,263 @@
-# Verifier 覆盖率采集框架
+# Verifier KCOV Coverage
 
-基于 KCOV 的 eBPF Verifier 自动化覆盖率采集框架
+基于 KCOV 的 eBPF verifier 覆盖率采集与分析工具。
 
-## 快速开始
+当前项目把两类结果明确区分开：
 
-### 1. 安装依赖
+- `执行路径`：按原始 `path_hash` / PC 序列区分
+- `覆盖行集合`：按最终覆盖到的源码行集合区分
+
+不要把两者混用。
+
+## 功能概览
+
+- 采集单个 `.o` 测试用例在内核 verifier 中触发的 KCOV PC 序列
+- 生成执行路径指纹并保存到 SQLite
+- 将 PC 批量解析到源码位置
+- 保存完整覆盖行、执行路径顺序轨迹
+- 查询执行路径摘要、覆盖行集合摘要、单个 testcase 覆盖详情
+- 导出 JSON / text 报告
+
+## 目录
+
+```text
+ver_kcov/
+├── analysis/
+├── config/
+├── core/
+├── pipeline/
+├── scripts/
+├── utils/
+├── kcov_runner.c
+├── main.py
+├── Makefile
+└── README.md
+```
+
+## 环境要求
+
+- Linux 内核启用 `CONFIG_KCOV=y`
+- 可访问 `/sys/kernel/debug/kcov`
+- 带调试信息的 `vmlinux`
+- `llvm-symbolizer`
+- `libbpf`
+- Python 3
+
+常用依赖安装：
 
 ```bash
 pip install pyyaml
-```
-
-### 2. 准备环境
-
-```bash
-# 准备 vmlinux 文件（带调试符号的内核镜像）
-cp /path/to/vmlinux ./vmlinux
-
-# 编译 KCOV 采集程序
 make
-# 或者手动编译
-gcc -o kcov_runner kcov_runner.c -lbpf
 ```
 
-### 3. 配置 Verifier 地址范围
+## 快速开始
+
+### 1. 准备 `vmlinux`
+
+把当前系统对应、带调试信息的 `vmlinux` 放到项目根目录：
 
 ```bash
-# 自动提取符号地址并更新配置文件
+cp /path/to/vmlinux ./vmlinux
+```
+
+确认包含调试信息：
+
+```bash
+file vmlinux
+```
+
+### 2. 自动配置 verifier 地址范围
+
+```bash
 python3 scripts/auto_config.py ./vmlinux ./config/kcov_config.yaml
 ```
 
-脚本会自动：
-- 从 vmlinux 提取 bpf_check 等符号地址
-- 自动计算 Verifier 地址范围
-- 更新配置文件 `config/kcov_config.yaml`
+当前 `auto_config.py` 会按 `kernel/bpf/verifier.c` 的实际符号簇推导范围，不再使用过时的固定偏移估算。
 
-配置示例（自动配置后）：
+### 3. 编译采集器
+
+```bash
+make
+```
+
+### 4. 运行采集
+
+`run` 需要 `sudo`。并且它会清理本次运行相关产物：
+
+- 数据库旧数据
+- PC lookup cache
+- 结果目录
+- 遗留的 `verifier_pcs.txt`
+
+```bash
+sudo python3 main.py run
+```
+
+指定测试用例目录：
+
+```bash
+sudo python3 main.py run -t testcases/mini
+```
+
+## 命令
+
+### 采集
+
+```bash
+sudo python3 main.py run
+sudo python3 main.py run -t testcases/mini          
+```
+
+### 分析
+
+```bash
+python3 main.py analyze --report
+python3 main.py analyze --stats
+```
+
+### 查询
+
+执行路径摘要：
+
+```bash
+python3 main.py query --execution-paths
+python3 main.py query --execution-paths -v
+```
+
+- `--execution-paths`：按原始执行路径区分
+- `-v`：打印该执行路径的已持久化顺序轨迹，格式类似 `13860 -> 13880`
+
+覆盖行集合摘要：
+
+```bash
+python3 main.py query --coverage-groups
+python3 main.py query --coverage-groups -v
+```
+
+- `--coverage-groups`：按最终覆盖到的源码行集合区分
+- `-v`：展开每个文件覆盖到的行集合
+
+单个 testcase：
+
+```bash
+python3 main.py query -tc 3.o
+```
+
+文件 / 行查询：
+
+```bash
+python3 main.py query -f kernel/bpf/verifier.c
+python3 main.py query -l "kernel/bpf/verifier.c:1234"
+```
+
+### 导出
+
+```bash
+python3 main.py export -o report.json
+python3 main.py export -o report.txt --format text
+```
+
+## 配置文件
+
+配置文件默认是 [config/kcov_config.yaml](/home/clhiker/ver_kcov/config/kcov_config.yaml)。
+
+关键字段：
+
 ```yaml
-vmlinux_path: "./vmlinux"
-kcov_runner_path: "./kcov_runner"
-verifier_start_addr: "0xffffffff81dcd390"  # 自动提取
-verifier_end_addr: "0xffffffff81e17390"    # 自动计算
-testcase_dir: "./testcases"
+vmlinux_path: ../vmlinux
+kcov_runner_path: ../kcov_runner
+verifier_start_addr: '0x...'
+verifier_end_addr: '0x...'
+testcase_dir: ../testcases
+lookup_table_cache: ../cache/pc_lookup_table.txt
+db_path: ../kcov_coverage.db
 ```
 
-**手动配置（可选）**：
-如果自动配置失败，可以手动提取地址：
-```bash
-# 查看符号地址
-nm -n vmlinux | grep bpf_check
+## 结果语义
 
-# 手动编辑配置文件
-vim config/kcov_config.yaml
-```
+### 执行路径
 
-### 4. 运行覆盖率采集
+执行路径由原始 KCOV PC 序列生成 `path_hash`。
 
-```bash
-# 基本运行
-python3 main.py run
+特点：
 
-# 指定测试用例目录
-python3 main.py run -t ./my_testcases
-```
+- 保留顺序信息
+- 区分不同 verifier 执行轨迹
+- 查询入口：`query --execution-paths`
 
-### 5. 分析结果
+### 覆盖行集合
 
-```bash
-# 查看覆盖率报告
-python3 main.py analyze --report
-```
+覆盖行集合由 testcase 最终命中的 `file:line` 集合归并得到。
 
-## 核心功能
+特点：
 
-### 路径指纹 (Path Fingerprinting)
-1. **过滤**：只保留 verifier.c 地址范围内的 PC
-2. **折叠**：连续重复的 PC 只保留一个
-3. **哈希**：生成 SHA-256 指纹（前 16 位）
+- 不保留顺序
+- 适合看“覆盖面是否一致”
+- 查询入口：`query --coverage-groups`
 
-### 全局地址解析
-- 收集所有测试用例的唯一 PC 地址
-- 一次性批量运行 `llvm-symbolizer`
-- 建立 O(1) 查找表
+### 单个 testcase 覆盖详情
 
-### 数据库存储
-使用 SQLite 存储：
-- 测试用例信息
-- 路径指纹
-- 源码覆盖信息
+`query -tc` 显示的是该 testcase 命中的完整覆盖行，不等同于执行轨迹。
 
-### 覆盖率分析
-- 路径分布统计
-- 未覆盖行检测
+## 已知限制
 
-## 命令行接口
+- 某些程序类型不能作为普通 standalone testcase 直接加载，例如 `freplace/*`。这类 case 可能在进入 verifier 主检查前就因缺少 attach target 而失败。
+- `bpftool` 只适合作为调试手段，不是当前项目采集链路的一部分。
+- 更换 `vmlinux` 后必须重新执行：
 
 ```bash
-# 运行覆盖率采集
-python3 main.py run
-
-# 分析数据
-python3 main.py analyze --report    # 生成报告
-python3 main.py analyze --stats     # 生成统计信息
-
-# 查询信息
-python3 main.py query -f kernel/bpf/verifier.c  # 查询文件
-python3 main.py query -l "verifier.c:1234"      # 查询行
-python3 main.py query -tc 6254.o                # 查询文件的覆盖信息
-
-python3 main.py query --paths                   # 查询具体覆盖的路径
-python3 main.py query --paths -v
-python3 main.py analyze --report
-
-# 导出数据
-python3 main.py export -o report.json  # JSON 格式
-python3 main.py export -o report.txt   # 文本格式
+python3 scripts/auto_config.py ./vmlinux ./config/kcov_config.yaml
+sudo python3 main.py run -t ...
 ```
 
-## 项目结构
-
-```
-ver_kcov/
-├── core/                      # 核心模块
-│   ├── kcov_collector.py      # KCOV 数据采集
-│   ├── path_fingerprinter.py  # 路径指纹生成
-│   ├── pc_resolver.py         # PC 地址解析
-│   └── coverage_db.py         # SQLite 数据库
-├── pipeline/                  # 流水线模块
-│   └── runner.py              # 自动化控制器
-├── analysis/                  # 分析模块
-│   ├── coverage_analyzer.py   # 覆盖率分析
-│   └── path_cluster.py        # 路径聚类
-├── utils/                     # 工具模块
-│   └── config.py              # 配置管理
-├── scripts/                   # 辅助脚本
-│   ├── extract_symbols.sh     # 符号地址提取
-│   └── llvm_symbolizer.py     # 批量地址解析
-├── config/                    # 配置文件
-│   └── kcov_config.yaml       # 主配置
-├── testcases/                 # 测试用例目录
-├── main.py                    # 主入口
-├── kcov_runner.c              # KCOV 采集程序源码
-├── Makefile                   # 编译配置
-└── README.md                  # 本文档
-```
-
-## 输出示例
-
-```
-============================================================
-Verifier 覆盖率分析报告
-============================================================
-测试用例总数：100
-唯一路径数：25
-覆盖文件数：3
-覆盖行数：1500
-覆盖率：45.5%
-============================================================
-```
-
-## 高级用法
-
-### 增量测试识别
-
-```python
-from core.coverage_db import CoverageDatabase
-
-with CoverageDatabase("kcov_coverage.db") as db:
-    # 找到覆盖修改代码行的所有测试用例
-    test_cases = db.find_test_cases_for_line("verifier.c", 1234)
-    print(f"需要回归测试的用例：{test_cases}")
-```
-
-## 支持的环境
-
-本框架支持以下两种运行环境：
-
-### 1. 宿主机（WSL2）
-- 需要自定义编译的内核（启用 `CONFIG_KCOV=y`）
-- 直接运行，性能更好
-- 推荐用于日常开发和测试
-
-### 2. QEMU 虚拟机
-- 适用于需要更完整内核模拟的场景
-- 需要配置虚拟机和内核镜像
-- 推荐用于深度调试和验证
+不要继续复用旧数据库结果。
 
 ## 故障排查
 
-### KCOV 采集失败
-
-**问题 1: 打开 /sys/kernel/debug/kcov 失败**
+### 1. 无法打开 KCOV
 
 ```bash
-# 挂载 debugfs
 sudo mount -t debugfs none /sys/kernel/debug
-
-# 设置权限
 sudo chmod 666 /sys/kernel/debug/kcov
 ```
 
-**问题 2: KCOV_INIT_TRACE 失败**
+检查内核配置：
 
-检查内核是否支持 KCOV：
 ```bash
 zgrep KCOV /proc/config.gz
-# 应该看到：CONFIG_KCOV=y
 ```
 
-**问题 3: 缓冲区溢出**
+### 2. 查询结果里没有 `verifier.c`
 
-如果收集到的 PC 超过缓冲区大小，修改 `kcov_runner.c`：
-```c
-#define KCOV_BUFFER_SIZE (2 << 20)  // 增大到 2MB
-```
+优先检查：
 
-**问题 4: KCOV_DISABLE 失败**
+- 当前 `vmlinux` 是否和运行内核匹配
+- 是否重新执行过 `auto_config.py`
+- 是否重新执行过 `sudo python3 main.py run`
 
-```
-[ERROR] KCOV_DISABLE 失败：Invalid argument
-```
+### 3. 两个 testcase 看起来完全一样
 
-这是**正常现象**。eBPF 程序加载后会触发内核 KCOV 插桩，即使调用 `KCOV_DISABLE` ioctl，内核仍可能继续收集。程序会正确保存已收集的 PC 数据，不影响使用。
-
-### llvm-symbolizer 解析失败
+先确认不是旧数据库结果：
 
 ```bash
-# 检查 vmlinux 是否包含调试信息
-file vmlinux
-# 应该显示 "with debug_info"
-
-# 手动测试
-llvm-symbolizer -e vmlinux 0xffffffff81dcd390
+sudo python3 main.py run -t testcases/mini
 ```
+
+`run` 会重新生成除配置外的运行产物，不应复用旧结果。
+
+### 4. 手工验证配置
+
+```bash
+python3 - <<'PY'
+from scripts.auto_config import extract_symbol_addresses
+print(extract_symbol_addresses('vmlinux'))
+PY
+```
+
+## 开发说明
+
+- `kcov_runner.c` 负责打开 KCOV、加载 BPF object、导出原始 PC
+- [core/kcov_collector.py](/home/clhiker/ver_kcov/core/kcov_collector.py) 负责调用 runner，并保证每个 testcase 使用独立输出文件
+- [core/pc_resolver.py](/home/clhiker/ver_kcov/core/pc_resolver.py) 使用 `llvm-symbolizer` 批量解析 PC
+- [pipeline/runner.py](/home/clhiker/ver_kcov/pipeline/runner.py) 负责完整流水线
+- [core/coverage_db.py](/home/clhiker/ver_kcov/core/coverage_db.py) 负责数据库存储与查询

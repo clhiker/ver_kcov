@@ -15,7 +15,8 @@ from core.coverage_db import CoverageDatabase
 class CoverageReport:
     """覆盖率报告"""
     total_test_cases: int
-    unique_paths: int
+    unique_execution_paths: int
+    unique_coverage_groups: int
     covered_files: int
     covered_lines: int
     total_lines: int = 0  # 需要外部提供
@@ -27,20 +28,25 @@ class CoverageReport:
     # 每个测试用例的覆盖详情
     testcase_coverage: List[Dict] = None
 
-    # 每条路径的覆盖摘要
-    path_coverage: List[Dict] = None
+    # 每条执行路径的摘要
+    execution_paths: List[Dict] = None
+
+    # 每个覆盖行集合分组的摘要
+    coverage_groups: List[Dict] = None
     
     def to_dict(self) -> dict:
         return {
             'total_test_cases': self.total_test_cases,
-            'unique_paths': self.unique_paths,
+            'unique_execution_paths': self.unique_execution_paths,
+            'unique_coverage_groups': self.unique_coverage_groups,
             'covered_files': self.covered_files,
             'covered_lines': self.covered_lines,
             'total_lines': self.total_lines,
             'coverage_percentage': self.coverage_percentage,
             'uncovered_lines': self.uncovered_lines or {},
             'testcase_coverage': self.testcase_coverage or [],
-            'path_coverage': self.path_coverage or []
+            'execution_paths': self.execution_paths or [],
+            'coverage_groups': self.coverage_groups or []
         }
 
 
@@ -65,11 +71,13 @@ class CoverageAnalyzer:
         
         report = CoverageReport(
             total_test_cases=stats['total_test_cases'],
-            unique_paths=stats['unique_paths'],
+            unique_execution_paths=stats['unique_execution_paths'],
+            unique_coverage_groups=stats['unique_coverage_groups'],
             covered_files=stats['covered_files'],
             covered_lines=stats['covered_lines'],
             testcase_coverage=stats.get('testcase_coverage', []),
-            path_coverage=self.db.get_covered_paths_summary()
+            execution_paths=self.db.get_execution_paths_summary(),
+            coverage_groups=self.db.get_coverage_groups_summary()
         )
         
         # 如果提供了源文件，计算未覆盖的行
@@ -244,18 +252,31 @@ class CoverageAnalyzer:
             f.write("="*60 + "\n\n")
             
             f.write(f"测试用例总数：{report.total_test_cases}\n")
-            f.write(f"唯一路径数：{report.unique_paths}\n")
+            f.write(f"唯一执行路径数：{report.unique_execution_paths}\n")
+            f.write(f"唯一覆盖行集合数：{report.unique_coverage_groups}\n")
             f.write(f"覆盖文件数：{report.covered_files}\n")
             f.write(f"覆盖行数：{report.covered_lines}\n")
             
             if report.total_lines > 0:
                 f.write(f"覆盖率：{report.coverage_percentage:.2f}%\n")
 
-            if report.path_coverage:
+            if report.execution_paths:
                 f.write("\n")
-                f.write("路径覆盖摘要\n")
+                f.write("执行路径摘要\n")
                 f.write("-"*60 + "\n")
-                for path in report.path_coverage:
+                for path in report.execution_paths:
+                    f.write(
+                        f"{path['path_hash']}  "
+                        f"PCs={path['pc_count']}  "
+                        f"Lines={path['covered_lines']}  "
+                        f"Tests={', '.join(path['testcases'])}\n"
+                    )
+
+            if report.coverage_groups:
+                f.write("\n")
+                f.write("覆盖行集合摘要\n")
+                f.write("-"*60 + "\n")
+                for path in report.coverage_groups:
                     f.write(
                         f"{path['coverage_signature']}  "
                         f"Files={path['covered_files']}  "

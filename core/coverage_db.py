@@ -80,6 +80,16 @@ class CoverageDatabase:
                 FOREIGN KEY (path_hash) REFERENCES path_fingerprints(path_hash)
             )
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS execution_path_sequences (
+                path_hash TEXT PRIMARY KEY,
+                sequence_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (path_hash) REFERENCES path_fingerprints(path_hash)
+            )
+        ''')
         
         # 创建索引加速查询
         cursor.execute('''
@@ -199,6 +209,34 @@ class CoverageDatabase:
             print(f"[!] Database error: {e}")
             self.conn.rollback()
             return 0
+
+    def save_execution_path_sequence(self, path_hash: str, sequence: Dict[str, List[int]]) -> bool:
+        """保存执行路径的有序源码行轨迹。"""
+        cursor = self.conn.cursor()
+
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO execution_path_sequences
+                (path_hash, sequence_json, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            ''', (path_hash, json.dumps(sequence)))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"[!] Database error: {e}")
+            self.conn.rollback()
+            return False
+
+    def get_execution_path_sequence(self, path_hash: str) -> Dict[str, List[int]]:
+        """获取执行路径的有序源码行轨迹。"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT sequence_json FROM execution_path_sequences WHERE path_hash = ?
+        ''', (path_hash,))
+        row = cursor.fetchone()
+        if not row:
+            return {}
+        return json.loads(row['sequence_json'])
     
     def get_test_cases_by_path_hash(self, path_hash: str) -> List[TestCase]:
         """根据路径哈希获取测试用例"""
@@ -209,11 +247,54 @@ class CoverageDatabase:
         
         return [self._row_to_test_case(row) for row in cursor.fetchall()]
 
-    def get_covered_paths_summary(self) -> List[Dict]:
+    def get_execution_paths_summary(self) -> List[Dict]:
         """
-        获取已覆盖路径的摘要信息
+        获取执行路径摘要信息。
 
-        路径的定义基于具体覆盖到的源码行集合，而不是 PC 序列或 path_hash。
+        路径的定义基于原始执行路径指纹 path_hash。
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT
+                pf.path_hash,
+                pf.pc_count,
+                COUNT(DISTINCT tc.id) AS testcase_count
+            FROM path_fingerprints pf
+            LEFT JOIN test_cases tc ON tc.path_hash = pf.path_hash
+            GROUP BY pf.path_hash, pf.pc_count
+            ORDER BY testcase_count DESC, pf.pc_count DESC, pf.path_hash ASC
+        ''')
+
+        summaries = []
+        for row in cursor.fetchall():
+            testcases = self.get_test_cases_by_path_hash(row['path_hash'])
+            files = {}
+
+            cursor.execute('''
+                SELECT DISTINCT file_path, line_number
+                FROM source_coverage
+                WHERE path_hash = ?
+                ORDER BY file_path, line_number
+            ''', (row['path_hash'],))
+            for cov_row in cursor.fetchall():
+                files.setdefault(cov_row['file_path'], []).append(cov_row['line_number'])
+
+            summaries.append({
+                'path_hash': row['path_hash'],
+                'pc_count': row['pc_count'],
+                'testcases': sorted(tc.name for tc in testcases),
+                'covered_files': len(files),
+                'covered_lines': sum(len(lines) for lines in files.values()),
+                'files': files
+            })
+
+        return summaries
+
+    def get_coverage_groups_summary(self) -> List[Dict]:
+        """
+        获取覆盖行集合摘要信息。
+
+        分组定义基于具体覆盖到的源码行集合，而不是执行路径指纹。
 
         Returns:
             [{
@@ -332,8 +413,8 @@ class CoverageDatabase:
         cursor.execute('SELECT COUNT(*) as count FROM test_cases')
         stats['total_test_cases'] = cursor.fetchone()['count']
         
-        # 唯一路径数（按具体覆盖行集合归并）
-        stats['unique_paths'] = len(self.get_covered_paths_summary())
+        stats['unique_execution_paths'] = len(self.get_execution_paths_summary())
+        stats['unique_coverage_groups'] = len(self.get_coverage_groups_summary())
         
         # 覆盖的源码行数（去重后的总数）
         cursor.execute('SELECT COUNT(DISTINCT file_path || ":" || line_number) as count FROM source_coverage')
@@ -462,7 +543,7 @@ class CoverageDatabase:
         cursor.execute('''
             SELECT DISTINCT t.name 
             FROM source_coverage sc
-            JOIN test_cases t ON sc.path_hash = t.path_hash
+            JOIN test_cases t ON sc.testcase_id = t.id
             WHERE sc.file_path = ? AND sc.line_number = ?
         ''', (file_path, line_number))
         
@@ -490,6 +571,8 @@ class CoverageDatabase:
             cursor.execute('DELETE FROM path_fingerprints')
             # 删除所有源码覆盖记录
             cursor.execute('DELETE FROM source_coverage')
+            # 删除所有执行路径轨迹
+            cursor.execute('DELETE FROM execution_path_sequences')
             
             self.conn.commit()
             print("[*] 已清空数据库中的所有数据")

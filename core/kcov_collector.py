@@ -4,6 +4,7 @@ KCOV 数据采集模块
 """
 import subprocess
 import os
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 from utils.config import Config
@@ -31,11 +32,24 @@ class KCOVCollector:
         if not self.kcov_runner.exists():
             raise FileNotFoundError(f"KCOV runner not found: {self.kcov_runner}")
         
+        temp_output_file = None
+
         try:
+            if output_file:
+                actual_output_file = output_file
+            else:
+                fd, temp_output_file = tempfile.mkstemp(prefix="kcov_", suffix=".txt")
+                os.close(fd)
+                actual_output_file = temp_output_file
+
+            # 避免复用上一次遗留结果
+            if os.path.exists(actual_output_file):
+                os.remove(actual_output_file)
+
             # 运行 KCOV 采集程序
             # 注意：即使 verifier 失败（返回码非 0），也要尝试收集数据
             result = subprocess.run(
-                [str(self.kcov_runner), testcase_path],
+                [str(self.kcov_runner), testcase_path, "-o", actual_output_file],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
@@ -43,16 +57,10 @@ class KCOVCollector:
             )
             
             # 从输出或文件读取 PC 序列
-            if output_file:
-                pcs = self._read_pcs_from_file(output_file)
+            if os.path.exists(actual_output_file):
+                pcs = self._read_pcs_from_file(actual_output_file)
             else:
-                # 默认从 verifier_pcs.txt 读取
-                default_file = "verifier_pcs.txt"
-                if os.path.exists(default_file):
-                    pcs = self._read_pcs_from_file(default_file)
-                else:
-                    # 从 stdout 解析
-                    pcs = self._parse_pcs_from_stdout(result.stdout)
+                pcs = self._parse_pcs_from_stdout(result.stdout)
             
             # 如果没有收集到 PC，才报告错误
             if not pcs:
@@ -69,6 +77,9 @@ class KCOVCollector:
             # 其他错误，打印警告但继续
             print(f"[WARNING] 收集 {testcase_path} 时出错：{e}")
             return []
+        finally:
+            if temp_output_file and os.path.exists(temp_output_file):
+                os.remove(temp_output_file)
     
     def collect_batch(self, testcase_paths: List[str], output_dir: str) -> dict:
         """

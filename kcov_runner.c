@@ -289,6 +289,7 @@ int main(int argc, char *argv[])
 {
     struct kcov_context ctx = {0};
     const char *bpf_file;
+    const char *output_file = OUTPUT_FILE;
     int ret = 0;
     
     /* 解析命令行参数 */
@@ -307,6 +308,9 @@ int main(int argc, char *argv[])
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             verbose = 1;
+        } else if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) &&
+                   i + 1 < argc) {
+            output_file = argv[++i];
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             return 0;
         }
@@ -361,7 +365,7 @@ int main(int argc, char *argv[])
     }
     
     /* 保存到文件 */
-    if (save_pcs_to_file(&ctx, OUTPUT_FILE) < 0) {
+    if (save_pcs_to_file(&ctx, output_file) < 0) {
         ret = 1;
     }
     

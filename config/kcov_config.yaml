@@ -7,6 +7,6 @@ parallel_workers: 4
 result_dir: ../path_results
 testcase_dir: ../testcases
 use_llvm_symbolizer: true
-verifier_end_addr: '0xffffffff81e17390'
-verifier_start_addr: '0xffffffff81dcd390'
+verifier_end_addr: '0xffffffff81a8eb60'
+verifier_start_addr: '0xffffffff81a1f850'
 vmlinux_path: ../vmlinux

@@ -47,18 +47,52 @@ def cmd_query(args):
     config = load_config(args.config)
     
     with CoverageDatabase(config.db_path) as db:
-        if args.paths:
-            paths = db.get_covered_paths_summary()
+        if args.execution_paths:
+            paths = db.get_execution_paths_summary()
             print("="*80)
-            print("已覆盖路径摘要")
+            print("执行路径摘要")
             print("="*80)
 
             if not paths:
-                print("当前没有已覆盖路径")
+                print("当前没有执行路径数据")
                 print("="*80)
                 return
 
-            print(f"{'路径签名':<18} {'覆盖文件数':>12} {'覆盖行数':>12} {'测试用例集合':<30}")
+            print(f"{'path_hash':<18} {'PC 数':>10} {'覆盖行数':>12} {'测试用例集合':<30}")
+            print("-"*80)
+
+            for path in paths:
+                print(
+                    f"{path['path_hash']:<18} "
+                    f"{path['pc_count']:>10} "
+                    f"{path['covered_lines']:>12} "
+                    f"{', '.join(path['testcases'])}"
+                )
+                if args.verbose:
+                    sequences = db.get_execution_path_sequence(path['path_hash'])
+                    if sequences:
+                        for file_path, lines in sorted(sequences.items()):
+                            print(f"  {file_path}: {' -> '.join(str(line) for line in lines)}")
+                    else:
+                        print("  [!] 未找到已持久化的执行轨迹，请重新运行 run 以生成轨迹数据")
+
+            print("-"*80)
+            print(f"总计 {len(paths)} 条执行路径")
+            print("="*80)
+            return
+
+        if args.coverage_groups:
+            paths = db.get_coverage_groups_summary()
+            print("="*80)
+            print("覆盖行集合摘要")
+            print("="*80)
+
+            if not paths:
+                print("当前没有覆盖行集合数据")
+                print("="*80)
+                return
+
+            print(f"{'覆盖签名':<18} {'覆盖文件数':>12} {'覆盖行数':>12} {'测试用例集合':<30}")
             print("-"*80)
 
             for path in paths:
@@ -73,7 +107,7 @@ def cmd_query(args):
                         print(f"  {file_path}: {lines}")
 
             print("-"*80)
-            print(f"总计 {len(paths)} 条已覆盖路径")
+            print(f"总计 {len(paths)} 个覆盖行集合")
             print("="*80)
             return
 
@@ -153,7 +187,8 @@ def print_report(report):
     print("Verifier 覆盖率分析报告")
     print("="*60)
     print(f"测试用例总数：{report.total_test_cases}")
-    print(f"唯一路径数：{report.unique_paths}")
+    print(f"唯一执行路径数：{report.unique_execution_paths}")
+    print(f"唯一覆盖行集合数：{report.unique_coverage_groups}")
     print(f"覆盖文件数：{report.covered_files}")
     print(f"覆盖行数（去重后）：{report.covered_lines}")
     
@@ -180,14 +215,32 @@ def print_report(report):
         print("-"*70)
         print(f"总计 {len(report.testcase_coverage)} 个测试用例")
 
-    if report.path_coverage:
+    if report.execution_paths:
         print("\n" + "="*80)
-        print("路径覆盖摘要")
+        print("执行路径摘要")
         print("="*80)
-        print(f"{'路径签名':<18} {'覆盖文件数':>12} {'覆盖行数':>12} {'测试用例集合':<30}")
+        print(f"{'path_hash':<18} {'PC 数':>10} {'覆盖行数':>12} {'测试用例集合':<30}")
         print("-"*80)
 
-        for path in report.path_coverage:
+        for path in report.execution_paths:
+            print(
+                f"{path['path_hash']:<18} "
+                f"{path['pc_count']:>10} "
+                f"{path['covered_lines']:>12} "
+                f"{', '.join(path['testcases'])}"
+            )
+
+        print("-"*80)
+        print(f"总计 {len(report.execution_paths)} 条执行路径")
+
+    if report.coverage_groups:
+        print("\n" + "="*80)
+        print("覆盖行集合摘要")
+        print("="*80)
+        print(f"{'覆盖签名':<18} {'覆盖文件数':>12} {'覆盖行数':>12} {'测试用例集合':<30}")
+        print("-"*80)
+
+        for path in report.coverage_groups:
             print(
                 f"{path['coverage_signature']:<18} "
                 f"{path['covered_files']:>12} "
@@ -196,7 +249,7 @@ def print_report(report):
             )
 
         print("-"*80)
-        print(f"总计 {len(report.path_coverage)} 条路径")
+        print(f"总计 {len(report.coverage_groups)} 个覆盖行集合")
     
     print("="*60)
 
@@ -204,7 +257,8 @@ def print_report(report):
 def print_detailed_stats(db):
     """打印详细统计信息"""
     cursor = db.conn.cursor()
-    covered_paths = db.get_covered_paths_summary()
+    execution_paths = db.get_execution_paths_summary()
+    coverage_groups = db.get_coverage_groups_summary()
     
     # Verifier 总代码行数
     verifier_total_lines = 26169
@@ -245,7 +299,8 @@ def print_detailed_stats(db):
     print(f"  PC 覆盖率：{pc_coverage:.4f}%")
     
     print("\n【路径统计】")
-    print(f"  唯一覆盖路径数：{len(covered_paths)} 条")
+    print(f"  唯一执行路径数：{len(execution_paths)} 条")
+    print(f"  唯一覆盖行集合数：{len(coverage_groups)} 个")
     print(f"  测试用例总数：{total_test_cases} 个")
     
     # 每个测试用例的覆盖率
@@ -307,7 +362,8 @@ def main():
     
     # query 命令
     query_parser = subparsers.add_parser('query', help='查询覆盖率信息')
-    query_parser.add_argument('--paths', action='store_true', help='查询当前已覆盖的路径摘要')
+    query_parser.add_argument('--execution-paths', action='store_true', help='查询当前执行路径摘要')
+    query_parser.add_argument('--coverage-groups', action='store_true', help='查询当前覆盖行集合摘要')
     query_parser.add_argument('--testcase', '-tc', help='查询指定测试用例的覆盖详情')
     query_parser.add_argument('--file', '-f', help='查询文件覆盖情况')
     query_parser.add_argument('--line', '-l', help='查询覆盖指定行的测试用例 (格式：file:line)')

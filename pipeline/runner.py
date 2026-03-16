@@ -289,7 +289,10 @@ class CoveragePipeline:
             path_id = fingerprint.path_id
             
             # 直接从查找表获取该测试用例的源码位置
-            locations = [self.resolver._lookup_table[pc] for pc in pcs if pc in self.resolver._lookup_table]
+            locations = []
+            for pc in pcs:
+                if pc in self.resolver._lookup_table:
+                    locations.extend(self.resolver._lookup_table[pc])
             
             # 转换为字典格式
             loc_dicts = [loc.to_dict() for loc in locations if loc.file and loc.line > 0]
@@ -297,6 +300,32 @@ class CoveragePipeline:
             # 批量保存（按 testcase_id 保存）
             if loc_dicts:
                 self.db.batch_save_source_coverage(testcase_id, path_id, loc_dicts)
+
+            sequence = self._build_execution_path_sequence(pcs)
+            if sequence:
+                self.db.save_execution_path_sequence(path_id, sequence)
+
+    def _build_execution_path_sequence(self, pcs: List[str]) -> Dict[str, List[int]]:
+        """按原始 PC 顺序构建最内层源码行轨迹。"""
+        sequences: Dict[str, List[int]] = {}
+        last_seen: Dict[str, int] = {}
+
+        for pc in pcs:
+            locations = self.resolver._lookup_table.get(pc, [])
+            if not locations:
+                continue
+
+            loc = locations[0]
+            if not loc.file or loc.line <= 0:
+                continue
+
+            if last_seen.get(loc.file) == loc.line:
+                continue
+
+            sequences.setdefault(loc.file, []).append(loc.line)
+            last_seen[loc.file] = loc.line
+
+        return sequences
     
     def get_stats(self) -> dict:
         """获取统计信息"""

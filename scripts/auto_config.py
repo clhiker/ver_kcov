@@ -5,78 +5,126 @@
 """
 import subprocess
 import yaml
-import re
+import json
 import sys
 from pathlib import Path
 
 
+def _load_text_symbols(vmlinux_path: str) -> list:
+    """加载 vmlinux 中的文本符号地址。"""
+    result = subprocess.run(
+        ['nm', '-n', vmlinux_path],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+
+    symbols = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+
+        addr, sym_type, sym_name = parts[:3]
+        if sym_type not in ['t', 'T']:
+            continue
+
+        symbols.append({
+            'addr': int(addr, 16),
+            'addr_hex': f"0x{addr}",
+            'name': sym_name,
+        })
+
+    return symbols
+
+
+def _symbolize_addresses(vmlinux_path: str, addresses: list[str]) -> dict[str, str]:
+    """批量解析地址对应的源码文件。"""
+    if not addresses:
+        return {}
+
+    result = subprocess.run(
+        ['llvm-symbolizer', '-e', vmlinux_path, '--output-style=JSON'],
+        input="\n".join(addresses),
+        capture_output=True,
+        text=True,
+        check=True
+    )
+
+    mapping = {}
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        record = json.loads(line)
+        symbols = record.get('Symbol') or []
+        if not symbols:
+            continue
+        file_name = symbols[0].get('FileName', '')
+        mapping[record['Address']] = file_name
+
+    return mapping
+
+
 def extract_symbol_addresses(vmlinux_path: str) -> dict:
-    """从 vmlinux 提取符号地址"""
+    """从 vmlinux 提取 verifier.c 的实际地址范围。"""
     print(f"[*] 从 {vmlinux_path} 提取符号地址...")
     
     try:
-        # 运行 nm 命令
-        result = subprocess.run(
-            ['nm', '-n', vmlinux_path],
-            capture_output=True,
-            text=True,
-            check=True
+        symbols = _load_text_symbols(vmlinux_path)
+        bpf_check = next((s for s in symbols if s['name'] == 'bpf_check'), None)
+        if not bpf_check:
+            return {}
+
+        files_by_addr = _symbolize_addresses(
+            vmlinux_path,
+            [s['addr_hex'] for s in symbols]
         )
-        
-        lines = result.stdout.split('\n')
-        
-        # 查找 bpf_check 函数
-        bpf_check_start = None
-        bpf_check_end = None
-        
-        for line in lines:
-            parts = line.split()
-            if len(parts) >= 3:
-                addr = parts[0]
-                sym_type = parts[1]
-                sym_name = parts[2]
-                
-                # 查找 bpf_check 函数开始
-                if sym_name == 'bpf_check' and sym_type in ['t', 'T']:
-                    bpf_check_start = f"0x{addr}"
-        
-        # 查找 do_check 函数作为参考
+
+        verifier_symbols = [
+            s for s in symbols
+            if files_by_addr.get(s['addr_hex'], '').endswith('/kernel/bpf/verifier.c')
+        ]
+
+        if not verifier_symbols:
+            return {}
+
+        clusters = []
+        current_cluster = [verifier_symbols[0]]
+        for symbol in verifier_symbols[1:]:
+            if symbol['addr'] - current_cluster[-1]['addr'] > 0x10000:
+                clusters.append(current_cluster)
+                current_cluster = [symbol]
+            else:
+                current_cluster.append(symbol)
+        clusters.append(current_cluster)
+
+        verifier_cluster = next(
+            (cluster for cluster in clusters if any(s['name'] == 'bpf_check' for s in cluster)),
+            None
+        )
+        if not verifier_cluster:
+            return {}
+
+        start_addr = verifier_cluster[0]['addr']
+        end_addr = verifier_cluster[-1]['addr']
+
         do_check_addr = None
-        for line in lines:
-            parts = line.split()
-            if len(parts) >= 3:
-                addr = parts[0]
-                sym_type = parts[1]
-                sym_name = parts[2]
-                
-                if sym_name == 'do_check' and sym_type in ['t', 'T']:
-                    do_check_addr = f"0x{addr}"
-                    break
-        
-        # 如果没有找到 bpf_check，尝试使用 do_check
-        if not bpf_check_start and do_check_addr:
-            print(f"[!] 未找到 bpf_check，使用 do_check 作为参考")
-            bpf_check_start = do_check_addr
-        
-        if bpf_check_start:
-            # 估算结束地址（从起始地址偏移约 300KB）
-            start_int = int(bpf_check_start, 16)
-            estimated_end = start_int + 0x4a000  # 约 300KB
-            bpf_check_end = f"0x{estimated_end:x}"
-            
-            return {
-                'start': bpf_check_start,
-                'end': bpf_check_end,
-                'do_check': do_check_addr
-            }
-        
-        return {}
+        do_check = next((s for s in verifier_cluster if s['name'] == 'do_check'), None)
+        if do_check:
+            do_check_addr = do_check['addr_hex']
+
+        return {
+            'start': f"0x{start_addr:x}",
+            'end': f"0x{end_addr:x}",
+            'do_check': do_check_addr
+        }
         
     except subprocess.CalledProcessError as e:
-        print(f"[!] 执行 nm 失败：{e.stderr}")
+        print(f"[!] 执行符号提取失败：{e.stderr}")
         return {}
     except FileNotFoundError:
-        print(f"[!] 未找到 vmlinux 文件：{vmlinux_path}")
+        print(f"[!] 未找到 vmlinux 或 llvm-symbolizer：{vmlinux_path}")
         return {}
 
 
