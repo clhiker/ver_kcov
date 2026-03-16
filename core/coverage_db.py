@@ -4,6 +4,7 @@
 """
 import sqlite3
 import json
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass
@@ -207,6 +208,74 @@ class CoverageDatabase:
         ''', (path_hash,))
         
         return [self._row_to_test_case(row) for row in cursor.fetchall()]
+
+    def get_covered_paths_summary(self) -> List[Dict]:
+        """
+        获取已覆盖路径的摘要信息
+
+        路径的定义基于具体覆盖到的源码行集合，而不是 PC 序列或 path_hash。
+
+        Returns:
+            [{
+                'coverage_signature': str,
+                'covered_files': int,
+                'covered_lines': int,
+                'testcases': [str, ...]
+                'files': {file_path: [line1, line2, ...]}
+            }]
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT id, name FROM test_cases ORDER BY name')
+        testcases = cursor.fetchall()
+
+        grouped_paths: Dict[str, Dict] = {}
+
+        for testcase in testcases:
+            cursor.execute('''
+                SELECT DISTINCT file_path, line_number
+                FROM source_coverage
+                WHERE testcase_id = ?
+                ORDER BY file_path, line_number
+            ''', (testcase['id'],))
+            rows = cursor.fetchall()
+
+            if not rows:
+                continue
+
+            files: Dict[str, List[int]] = {}
+            normalized_lines = []
+            for row in rows:
+                file_path = row['file_path']
+                line_number = row['line_number']
+                files.setdefault(file_path, []).append(line_number)
+                normalized_lines.append(f"{file_path}:{line_number}")
+
+            signature = hashlib.sha256("\n".join(normalized_lines).encode()).hexdigest()[:16]
+
+            if signature not in grouped_paths:
+                grouped_paths[signature] = {
+                    'coverage_signature': signature,
+                    'covered_files': len(files),
+                    'covered_lines': len(normalized_lines),
+                    'testcases': [],
+                    'files': files
+                }
+
+            grouped_paths[signature]['testcases'].append(testcase['name'])
+
+        summaries = list(grouped_paths.values())
+        summaries.sort(
+            key=lambda item: (
+                -len(item['testcases']),
+                -item['covered_lines'],
+                item['coverage_signature']
+            )
+        )
+
+        for summary in summaries:
+            summary['testcases'].sort()
+
+        return summaries
     
     def get_path_fingerprint(self, path_hash: str) -> Optional[List[str]]:
         """获取路径指纹的 PC 序列"""
@@ -263,9 +332,8 @@ class CoverageDatabase:
         cursor.execute('SELECT COUNT(*) as count FROM test_cases')
         stats['total_test_cases'] = cursor.fetchone()['count']
         
-        # 唯一路径数
-        cursor.execute('SELECT COUNT(*) as count FROM path_fingerprints')
-        stats['unique_paths'] = cursor.fetchone()['count']
+        # 唯一路径数（按具体覆盖行集合归并）
+        stats['unique_paths'] = len(self.get_covered_paths_summary())
         
         # 覆盖的源码行数（去重后的总数）
         cursor.execute('SELECT COUNT(DISTINCT file_path || ":" || line_number) as count FROM source_coverage')

@@ -97,8 +97,8 @@ class CoveragePipeline:
         # 步骤 4: 构建全局 PC 查找表
         print("\n[*] 阶段 2: 构建全局 PC 查找表")
         
-        # 优化：从数据库收集所有历史 PC + 当前 PC
-        unique_pcs = self._collect_all_unique_pcs_from_db(all_fingerprints)
+        # 从当前 fingerprints 收集唯一 PC
+        unique_pcs = self._collect_all_unique_pcs(all_fingerprints)
         self.stats['unique_paths'] = len(unique_pcs)
         print(f"[*] 发现 {len(unique_pcs)} 个唯一 PC 地址")
         
@@ -242,54 +242,13 @@ class CoveragePipeline:
         return self._collect_sequential(testcases)
     
     def _collect_all_unique_pcs(self, fingerprints: Dict[str, PathFingerprint]) -> Set[str]:
-        """收集所有唯一 PC 地址（仅从内存中的 fingerprints）"""
+        """收集所有唯一 PC 地址（仅从当前 fingerprints）"""
         unique_pcs = set()
         
         for fingerprint in fingerprints.values():
             if fingerprint.pcs:
                 unique_pcs.update(fingerprint.pcs)
         
-        return unique_pcs
-    
-    def _collect_all_unique_pcs_from_db(self, current_fingerprints: Dict[str, PathFingerprint]) -> Set[str]:
-        """
-        从数据库收集所有唯一 PC 地址（包括历史数据）
-        
-        优化策略：
-        1. 从数据库读取所有已保存的 path_fingerprints
-        2. 合并当前运行的 fingerprints
-        3. 返回所有唯一 PC 的并集
-        
-        这样可以确保：
-        - 第一次运行：解析所有 PC 并缓存
-        - 后续运行：直接从缓存加载，无需重复解析
-        """
-        unique_pcs = set()
-        
-        # 从数据库收集历史 PC
-        try:
-            cursor = self.db.conn.cursor()
-            cursor.execute("SELECT pcs FROM path_fingerprints WHERE pc_count > 0")
-            for (pcs_blob,) in cursor.fetchall():
-                import json
-                pcs = json.loads(pcs_blob)
-                unique_pcs.update(pcs)
-            print(f"[*] 从数据库加载了 {len(unique_pcs)} 个历史 PC")
-        except Exception as e:
-            print(f"[!] 从数据库加载 PC 失败：{e}")
-        
-        # 添加当前运行的 PC
-        current_count = 0
-        for fingerprint in current_fingerprints.values():
-            if fingerprint.pcs:
-                before = len(unique_pcs)
-                unique_pcs.update(fingerprint.pcs)
-                current_count += len(fingerprint.pcs)
-                new_pcs = len(unique_pcs) - before
-                if new_pcs > 0:
-                    print(f"[*] 新增 {new_pcs} 个 PC（来自当前运行）")
-        
-        print(f"[*] 总计 {len(unique_pcs)} 个唯一 PC（历史 + 当前）")
         return unique_pcs
     
     def _save_to_database(self, fingerprints: Dict[str, PathFingerprint]):

@@ -100,10 +100,16 @@ python3 main.py run
 
 # 分析数据
 python3 main.py analyze --report    # 生成报告
+python3 main.py analyze --stats     # 生成统计信息
 
 # 查询信息
 python3 main.py query -f kernel/bpf/verifier.c  # 查询文件
 python3 main.py query -l "verifier.c:1234"      # 查询行
+python3 main.py query -tc 6254.o                # 查询文件的覆盖信息
+
+python3 main.py query --paths                   # 查询具体覆盖的路径
+python3 main.py query --paths -v
+python3 main.py analyze --report
 
 # 导出数据
 python3 main.py export -o report.json  # JSON 格式
@@ -226,11 +232,3 @@ file vmlinux
 # 手动测试
 llvm-symbolizer -e vmlinux 0xffffffff81dcd390
 ```
-
-## 与现有脚本兼容
-
-框架保留了 `verifier_path_mapper.py` 作为简单映射工具，新功能使用 `main.py`。
-
-## 许可证
-
-MIT License

@@ -26,6 +26,9 @@ class CoverageReport:
     
     # 每个测试用例的覆盖详情
     testcase_coverage: List[Dict] = None
+
+    # 每条路径的覆盖摘要
+    path_coverage: List[Dict] = None
     
     def to_dict(self) -> dict:
         return {
@@ -36,7 +39,8 @@ class CoverageReport:
             'total_lines': self.total_lines,
             'coverage_percentage': self.coverage_percentage,
             'uncovered_lines': self.uncovered_lines or {},
-            'testcase_coverage': self.testcase_coverage or []
+            'testcase_coverage': self.testcase_coverage or [],
+            'path_coverage': self.path_coverage or []
         }
 
 
@@ -64,7 +68,8 @@ class CoverageAnalyzer:
             unique_paths=stats['unique_paths'],
             covered_files=stats['covered_files'],
             covered_lines=stats['covered_lines'],
-            testcase_coverage=stats.get('testcase_coverage', [])
+            testcase_coverage=stats.get('testcase_coverage', []),
+            path_coverage=self.db.get_covered_paths_summary()
         )
         
         # 如果提供了源文件，计算未覆盖的行
@@ -245,6 +250,18 @@ class CoverageAnalyzer:
             
             if report.total_lines > 0:
                 f.write(f"覆盖率：{report.coverage_percentage:.2f}%\n")
+
+            if report.path_coverage:
+                f.write("\n")
+                f.write("路径覆盖摘要\n")
+                f.write("-"*60 + "\n")
+                for path in report.path_coverage:
+                    f.write(
+                        f"{path['coverage_signature']}  "
+                        f"Files={path['covered_files']}  "
+                        f"Lines={path['covered_lines']}  "
+                        f"Tests={', '.join(path['testcases'])}\n"
+                    )
             
             f.write("\n")
             f.write("="*60 + "\n")

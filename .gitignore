@@ -51,3 +51,10 @@ cache/
 # Configuration overrides
 config/*.local.yaml
 vmlinux
+tmp/6_xdp_input_len_exceed.c
+tmp/7_tc_use_helper.c
+tmp/8_tc_exceed_mtu.c
+tmp/9_tc_exceed_mtu_da.c
+verifier_pcs.txt
+verifier_pcs.txt
+verifier_pcs.txt
