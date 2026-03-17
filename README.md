@@ -285,3 +285,12 @@ PY
 - [core/pc_resolver.py](/home/clhiker/ver_kcov/core/pc_resolver.py) 使用 `llvm-symbolizer` 批量解析 PC
 - [pipeline/runner.py](/home/clhiker/ver_kcov/pipeline/runner.py) 负责完整流水线
 - [core/coverage_db.py](/home/clhiker/ver_kcov/core/coverage_db.py) 负责数据库存储与查询
+
+
+# 虚拟机执行方法
+cd ~/workspace/image
+ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
+
+## 虚拟机内操作
+cd /mnt/root 进入代码目录
+接下来执行上述命令即可，不需要再使用sudo，因为此时已经是root权限了

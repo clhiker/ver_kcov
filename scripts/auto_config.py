@@ -11,9 +11,9 @@ from pathlib import Path
 
 
 def _load_text_symbols(vmlinux_path: str) -> list:
-    """加载 vmlinux 中的文本符号地址。"""
+    """加载 vmlinux 中的文本符号地址和大小。"""
     result = subprocess.run(
-        ['nm', '-n', vmlinux_path],
+        ['nm', '-S', '-n', vmlinux_path],
         capture_output=True,
         text=True,
         check=True
@@ -25,13 +25,22 @@ def _load_text_symbols(vmlinux_path: str) -> list:
         if len(parts) < 3:
             continue
 
-        addr, sym_type, sym_name = parts[:3]
-        if sym_type not in ['t', 'T']:
+        addr = parts[0]
+        if len(parts) >= 4 and parts[2] in ['t', 'T']:
+            size = parts[1]
+            sym_type = parts[2]
+            sym_name = parts[3]
+        elif len(parts) >= 3 and parts[1] in ['t', 'T']:
+            size = "0"
+            sym_type = parts[1]
+            sym_name = parts[2]
+        else:
             continue
 
         symbols.append({
             'addr': int(addr, 16),
             'addr_hex': f"0x{addr}",
+            'size': int(size, 16),
             'name': sym_name,
         })
 
@@ -107,7 +116,7 @@ def extract_symbol_addresses(vmlinux_path: str) -> dict:
             return {}
 
         start_addr = verifier_cluster[0]['addr']
-        end_addr = verifier_cluster[-1]['addr']
+        end_addr = verifier_cluster[-1]['addr'] + verifier_cluster[-1].get('size', 0)
 
         do_check_addr = None
         do_check = next((s for s in verifier_cluster if s['name'] == 'do_check'), None)
