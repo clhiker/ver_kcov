@@ -2,12 +2,13 @@
 
 基于 KCOV 的 eBPF verifier 覆盖率采集与分析工具。
 
-当前项目把两类结果明确区分开：
+当前项目把三类结果明确区分开：
 
 - `执行路径`：按原始 `path_hash` / PC 序列区分
+- `稳定路径`：按归一化后的 `stable_path_hash` / 控制流骨架区分
 - `覆盖行集合`：按最终覆盖到的源码行集合区分
 
-不要把两者混用。
+不要把三者混用。
 
 ## 功能概览
 
@@ -15,7 +16,7 @@
 - 生成执行路径指纹并保存到 SQLite
 - 将 PC 批量解析到源码位置
 - 保存完整覆盖行、执行路径顺序轨迹
-- 查询执行路径摘要、覆盖行集合摘要、单个 testcase 覆盖详情
+- 查询执行路径摘要、稳定路径摘要、覆盖行集合摘要、单个 testcase 覆盖详情
 - 导出 JSON / text 报告
 
 ## 目录
@@ -96,7 +97,7 @@ sudo python3 main.py run
 指定测试用例目录：
 
 ```bash
-sudo python3 main.py run -t testcases/mini
+sudo python3 main.py run -t testcases
 ```
 
 ## 命令
@@ -104,8 +105,7 @@ sudo python3 main.py run -t testcases/mini
 ### 采集
 
 ```bash
-sudo python3 main.py run
-sudo python3 main.py run -t testcases/mini          
+sudo python3 main.py run -t testcases  
 ```
 
 ### 分析
@@ -126,6 +126,16 @@ python3 main.py query --execution-paths -v
 
 - `--execution-paths`：按原始执行路径区分
 - `-v`：打印该执行路径的已持久化顺序轨迹，格式类似 `13860 -> 13880`
+
+稳定路径摘要：
+
+```bash
+python3 main.py query --stable-paths
+python3 main.py query --stable-paths -v
+```
+
+- `--stable-paths`：按稳定路径骨架区分
+- `-v`：打印对应原始 `path_hash` 集合和稳定骨架锚点序列
 
 覆盖行集合摘要：
 
@@ -171,6 +181,7 @@ verifier_end_addr: '0x...'
 testcase_dir: ../testcases
 lookup_table_cache: ../cache/pc_lookup_table.txt
 db_path: ../kcov_coverage.db
+stable_path_line_bucket: 64
 ```
 
 ## 结果语义
@@ -184,6 +195,19 @@ db_path: ../kcov_coverage.db
 - 保留顺序信息
 - 区分不同 verifier 执行轨迹
 - 查询入口：`query --execution-paths`
+
+### 稳定路径
+
+稳定路径由 `verifier.c` 内的归一化控制流骨架生成 `stable_path_hash`。
+stable_path 的规则是：只看 verifier.c，先做事件归一化，再抽取锚点，最后对行号按 64 行分桶并按首次出现去重。
+这个分组比原始 PC 序列稳定得多，但仍保留顺序语义
+
+特点：
+
+- 保留粗粒度顺序信息
+- 忽略一部分重复回环和局部动态抖动
+- 适合做“相对稳定”的路径分组
+- 查询入口：`query --stable-paths`
 
 ### 覆盖行集合
 

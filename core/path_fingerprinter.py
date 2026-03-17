@@ -3,7 +3,7 @@
 负责过滤、去重、生成路径哈希指纹
 """
 import hashlib
-from typing import List, Tuple, Set, Dict
+from typing import List, Dict, Iterable
 from dataclasses import dataclass
 from utils.config import Config
 
@@ -16,6 +16,8 @@ class PathFingerprint:
     pc_count: int  # PC 数量
     raw_count: int  # 原始 PC 数量
     compression_rate: float  # 压缩率
+    stable_path_id: str = ""  # 稳定路径哈希
+    stable_sequence: List[str] = None  # 稳定路径骨架事件序列
     
     def to_dict(self) -> dict:
         return {
@@ -23,7 +25,9 @@ class PathFingerprint:
             'pcs': self.pcs,
             'pc_count': self.pc_count,
             'raw_count': self.raw_count,
-            'compression_rate': self.compression_rate
+            'compression_rate': self.compression_rate,
+            'stable_path_id': self.stable_path_id,
+            'stable_sequence': self.stable_sequence or []
         }
 
 
@@ -93,6 +97,12 @@ class PathFingerprinter:
         path_str = ",".join(pcs)
         full_hash = hashlib.sha256(path_str.encode()).hexdigest()
         return full_hash[:16]  # 取前 16 位作为 ID
+
+    def compute_stable_hash(self, sequence: Iterable[str]) -> str:
+        """计算稳定路径哈希"""
+        path_str = ",".join(sequence)
+        full_hash = hashlib.sha256(path_str.encode()).hexdigest()
+        return full_hash[:16]
     
     def generate_batch(self, all_pcs: Dict[str, List[str]]) -> Dict[str, PathFingerprint]:
         """

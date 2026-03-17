@@ -18,6 +18,7 @@ class TestCase:
     name: str
     path: str
     path_hash: str
+    stable_path_hash: str
     pc_count: int
     created_at: str
 
@@ -47,6 +48,7 @@ class CoverageDatabase:
                 name TEXT UNIQUE NOT NULL,
                 path TEXT NOT NULL,
                 path_hash TEXT NOT NULL,
+                stable_path_hash TEXT DEFAULT '',
                 pc_count INTEGER,
                 raw_pc_count INTEGER,
                 compression_rate REAL,
@@ -90,10 +92,25 @@ class CoverageDatabase:
                 FOREIGN KEY (path_hash) REFERENCES path_fingerprints(path_hash)
             )
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stable_path_sequences (
+                stable_path_hash TEXT PRIMARY KEY,
+                sequence_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        self._ensure_column_exists('test_cases', 'stable_path_hash', "TEXT DEFAULT ''")
+        self._deduplicate_source_coverage()
         
         # 创建索引加速查询
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_path_hash ON test_cases(path_hash)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_stable_path_hash ON test_cases(stable_path_hash)
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_source_file_line ON source_coverage(file_path, line_number)
@@ -104,10 +121,37 @@ class CoverageDatabase:
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_source_testcase_id ON source_coverage(testcase_id)
         ''')
+        cursor.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_source_coverage_unique
+            ON source_coverage(testcase_id, path_hash, file_path, line_number, function_name, pc_address)
+        ''')
         
         self.conn.commit()
+
+    def _ensure_column_exists(self, table_name: str, column_name: str, column_def: str):
+        """为旧数据库补齐缺失列。"""
+        cursor = self.conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = {row['name'] for row in cursor.fetchall()}
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+            self.conn.commit()
+
+    def _deduplicate_source_coverage(self):
+        """清理历史重复覆盖记录，避免统计膨胀。"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            DELETE FROM source_coverage
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM source_coverage
+                GROUP BY testcase_id, path_hash, file_path, line_number, function_name, pc_address
+            )
+        ''')
+        self.conn.commit()
     
-    def save_test_case(self, name: str, path: str, path_hash: str, 
+    def save_test_case(self, name: str, path: str, path_hash: str,
+                      stable_path_hash: str,
                       pc_count: int, raw_pc_count: int = 0, 
                       compression_rate: float = 0.0) -> int:
         """
@@ -121,9 +165,9 @@ class CoverageDatabase:
         try:
             cursor.execute('''
                 INSERT OR REPLACE INTO test_cases 
-                (name, path, path_hash, pc_count, raw_pc_count, compression_rate, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (name, path, path_hash, pc_count, raw_pc_count, compression_rate))
+                (name, path, path_hash, stable_path_hash, pc_count, raw_pc_count, compression_rate, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (name, path, path_hash, stable_path_hash, pc_count, raw_pc_count, compression_rate))
             
             self.conn.commit()
             return cursor.lastrowid
@@ -227,6 +271,23 @@ class CoverageDatabase:
             self.conn.rollback()
             return False
 
+    def save_stable_path_sequence(self, stable_path_hash: str, sequence: List[str]) -> bool:
+        """保存稳定路径骨架轨迹。"""
+        cursor = self.conn.cursor()
+
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO stable_path_sequences
+                (stable_path_hash, sequence_json, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            ''', (stable_path_hash, json.dumps(sequence)))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"[!] Database error: {e}")
+            self.conn.rollback()
+            return False
+
     def get_execution_path_sequence(self, path_hash: str) -> Dict[str, List[int]]:
         """获取执行路径的有序源码行轨迹。"""
         cursor = self.conn.cursor()
@@ -236,6 +297,17 @@ class CoverageDatabase:
         row = cursor.fetchone()
         if not row:
             return {}
+        return json.loads(row['sequence_json'])
+
+    def get_stable_path_sequence(self, stable_path_hash: str) -> List[str]:
+        """获取稳定路径骨架轨迹。"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT sequence_json FROM stable_path_sequences WHERE stable_path_hash = ?
+        ''', (stable_path_hash,))
+        row = cursor.fetchone()
+        if not row:
+            return []
         return json.loads(row['sequence_json'])
     
     def get_test_cases_by_path_hash(self, path_hash: str) -> List[TestCase]:
@@ -283,6 +355,59 @@ class CoverageDatabase:
                 'path_hash': row['path_hash'],
                 'pc_count': row['pc_count'],
                 'testcases': sorted(tc.name for tc in testcases),
+                'covered_files': len(files),
+                'covered_lines': sum(len(lines) for lines in files.values()),
+                'files': files
+            })
+
+        return summaries
+
+    def get_stable_paths_summary(self) -> List[Dict]:
+        """
+        获取稳定路径摘要信息。
+
+        分组定义基于归一化后的 verifier 控制流骨架 stable_path_hash。
+        """
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT
+                stable_path_hash,
+                COUNT(DISTINCT id) AS testcase_count
+            FROM test_cases
+            WHERE stable_path_hash IS NOT NULL AND stable_path_hash != ''
+            GROUP BY stable_path_hash
+            ORDER BY testcase_count DESC, stable_path_hash ASC
+        ''')
+
+        summaries = []
+        for row in cursor.fetchall():
+            cursor.execute('''
+                SELECT id, name, path_hash
+                FROM test_cases
+                WHERE stable_path_hash = ?
+                ORDER BY name
+            ''', (row['stable_path_hash'],))
+            testcase_rows = cursor.fetchall()
+
+            testcase_ids = [tc['id'] for tc in testcase_rows]
+            files = {}
+
+            if testcase_ids:
+                placeholders = ",".join("?" for _ in testcase_ids)
+                cursor.execute(f'''
+                    SELECT DISTINCT file_path, line_number
+                    FROM source_coverage
+                    WHERE testcase_id IN ({placeholders})
+                    ORDER BY file_path, line_number
+                ''', testcase_ids)
+                for cov_row in cursor.fetchall():
+                    files.setdefault(cov_row['file_path'], []).append(cov_row['line_number'])
+
+            summaries.append({
+                'stable_path_hash': row['stable_path_hash'],
+                'anchor_count': len(self.get_stable_path_sequence(row['stable_path_hash'])),
+                'testcases': [tc['name'] for tc in testcase_rows],
+                'raw_paths': sorted({tc['path_hash'] for tc in testcase_rows if tc['path_hash']}),
                 'covered_files': len(files),
                 'covered_lines': sum(len(lines) for lines in files.values()),
                 'files': files
@@ -414,6 +539,7 @@ class CoverageDatabase:
         stats['total_test_cases'] = cursor.fetchone()['count']
         
         stats['unique_execution_paths'] = len(self.get_execution_paths_summary())
+        stats['unique_stable_paths'] = len(self.get_stable_paths_summary())
         stats['unique_coverage_groups'] = len(self.get_coverage_groups_summary())
         
         # 覆盖的源码行数（去重后的总数）
@@ -556,6 +682,7 @@ class CoverageDatabase:
             name=row['name'],
             path=row['path'],
             path_hash=row['path_hash'],
+            stable_path_hash=row['stable_path_hash'] if 'stable_path_hash' in row.keys() else '',
             pc_count=row['pc_count'],
             created_at=row['created_at']
         )
@@ -573,6 +700,8 @@ class CoverageDatabase:
             cursor.execute('DELETE FROM source_coverage')
             # 删除所有执行路径轨迹
             cursor.execute('DELETE FROM execution_path_sequences')
+            # 删除所有稳定路径轨迹
+            cursor.execute('DELETE FROM stable_path_sequences')
             
             self.conn.commit()
             print("[*] 已清空数据库中的所有数据")

@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from utils.config import Config
+from utils.terminal_format import format_table_row
 from pipeline.runner import CoveragePipeline
 from analysis.coverage_analyzer import CoverageAnalyzer
 from core.coverage_db import CoverageDatabase
@@ -58,16 +59,21 @@ def cmd_query(args):
                 print("="*80)
                 return
 
-            print(f"{'path_hash':<18} {'PC 数':>10} {'覆盖行数':>12} {'测试用例集合':<30}")
+            print(format_table_row([
+                ("path_hash", 18, "left"),
+                ("PC 数", 10, "right"),
+                ("覆盖行数", 12, "right"),
+                ("测试用例集合", 30, "left"),
+            ]))
             print("-"*80)
 
             for path in paths:
-                print(
-                    f"{path['path_hash']:<18} "
-                    f"{path['pc_count']:>10} "
-                    f"{path['covered_lines']:>12} "
-                    f"{', '.join(path['testcases'])}"
-                )
+                print(format_table_row([
+                    (path['path_hash'], 18, "left"),
+                    (path['pc_count'], 10, "right"),
+                    (path['covered_lines'], 12, "right"),
+                    (', '.join(path['testcases']), 30, "left"),
+                ]))
                 if args.verbose:
                     sequences = db.get_execution_path_sequence(path['path_hash'])
                     if sequences:
@@ -78,6 +84,43 @@ def cmd_query(args):
 
             print("-"*80)
             print(f"总计 {len(paths)} 条执行路径")
+            print("="*80)
+            return
+
+        if args.stable_paths:
+            paths = db.get_stable_paths_summary()
+            print("="*80)
+            print("稳定路径摘要")
+            print("="*80)
+
+            if not paths:
+                print("当前没有稳定路径数据")
+                print("="*80)
+                return
+
+            print(format_table_row([
+                ("stable_hash", 18, "left"),
+                ("锚点数", 10, "right"),
+                ("覆盖行数", 12, "right"),
+                ("测试用例集合", 30, "left"),
+            ]))
+            print("-"*80)
+
+            for path in paths:
+                print(format_table_row([
+                    (path['stable_path_hash'], 18, "left"),
+                    (path['anchor_count'], 10, "right"),
+                    (path['covered_lines'], 12, "right"),
+                    (', '.join(path['testcases']), 30, "left"),
+                ]))
+                if args.verbose:
+                    print(f"  raw_paths: {', '.join(path['raw_paths'])}")
+                    stable_sequence = db.get_stable_path_sequence(path['stable_path_hash'])
+                    if stable_sequence:
+                        print(f"  anchors: {' -> '.join(stable_sequence)}")
+
+            print("-"*80)
+            print(f"总计 {len(paths)} 条稳定路径")
             print("="*80)
             return
 
@@ -92,16 +135,21 @@ def cmd_query(args):
                 print("="*80)
                 return
 
-            print(f"{'覆盖签名':<18} {'覆盖文件数':>12} {'覆盖行数':>12} {'测试用例集合':<30}")
+            print(format_table_row([
+                ("覆盖签名", 18, "left"),
+                ("覆盖文件数", 12, "right"),
+                ("覆盖行数", 12, "right"),
+                ("测试用例集合", 30, "left"),
+            ]))
             print("-"*80)
 
             for path in paths:
-                print(
-                    f"{path['coverage_signature']:<18} "
-                    f"{path['covered_files']:>12} "
-                    f"{path['covered_lines']:>12} "
-                    f"{', '.join(path['testcases'])}"
-                )
+                print(format_table_row([
+                    (path['coverage_signature'], 18, "left"),
+                    (path['covered_files'], 12, "right"),
+                    (path['covered_lines'], 12, "right"),
+                    (', '.join(path['testcases']), 30, "left"),
+                ]))
                 if args.verbose and path['files']:
                     for file_path, lines in sorted(path['files'].items()):
                         print(f"  {file_path}: {lines}")
@@ -188,6 +236,7 @@ def print_report(report):
     print("="*60)
     print(f"测试用例总数：{report.total_test_cases}")
     print(f"唯一执行路径数：{report.unique_execution_paths}")
+    print(f"唯一稳定路径数：{report.unique_stable_paths}")
     print(f"唯一覆盖行集合数：{report.unique_coverage_groups}")
     print(f"覆盖文件数：{report.covered_files}")
     print(f"覆盖行数（去重后）：{report.covered_lines}")
@@ -200,7 +249,12 @@ def print_report(report):
         print("\n" + "="*60)
         print("各测试用例覆盖详情")
         print("="*60)
-        print(f"{'测试用例':<40} {'覆盖行数':<12} {'唯一行数':<12} {'状态':<10}")
+        print(format_table_row([
+            ("测试用例", 40, "left"),
+            ("覆盖行数", 12, "right"),
+            ("唯一行数", 12, "right"),
+            ("状态", 10, "left"),
+        ]))
         print("-"*70)
         
         for tc in report.testcase_coverage:
@@ -210,7 +264,12 @@ def print_report(report):
                 name = name[:35] + "..."
             # 标识失败的测试用例
             status = "失败" if tc['unique_lines'] == 0 or tc['covered_lines'] == 0 else "成功"
-            print(f"{name:<40} {tc['covered_lines']:<12} {tc['unique_lines']:<12} {status:<10}")
+            print(format_table_row([
+                (name, 40, "left"),
+                (tc['covered_lines'], 12, "right"),
+                (tc['unique_lines'], 12, "right"),
+                (status, 10, "left"),
+            ]))
         
         print("-"*70)
         print(f"总计 {len(report.testcase_coverage)} 个测试用例")
@@ -219,16 +278,21 @@ def print_report(report):
         print("\n" + "="*80)
         print("执行路径摘要")
         print("="*80)
-        print(f"{'path_hash':<18} {'PC 数':>10} {'覆盖行数':>12} {'测试用例集合':<30}")
+        print(format_table_row([
+            ("path_hash", 18, "left"),
+            ("PC 数", 10, "right"),
+            ("覆盖行数", 12, "right"),
+            ("测试用例集合", 30, "left"),
+        ]))
         print("-"*80)
 
         for path in report.execution_paths:
-            print(
-                f"{path['path_hash']:<18} "
-                f"{path['pc_count']:>10} "
-                f"{path['covered_lines']:>12} "
-                f"{', '.join(path['testcases'])}"
-            )
+            print(format_table_row([
+                (path['path_hash'], 18, "left"),
+                (path['pc_count'], 10, "right"),
+                (path['covered_lines'], 12, "right"),
+                (', '.join(path['testcases']), 30, "left"),
+            ]))
 
         print("-"*80)
         print(f"总计 {len(report.execution_paths)} 条执行路径")
@@ -237,16 +301,21 @@ def print_report(report):
         print("\n" + "="*80)
         print("覆盖行集合摘要")
         print("="*80)
-        print(f"{'覆盖签名':<18} {'覆盖文件数':>12} {'覆盖行数':>12} {'测试用例集合':<30}")
+        print(format_table_row([
+            ("覆盖签名", 18, "left"),
+            ("覆盖文件数", 12, "right"),
+            ("覆盖行数", 12, "right"),
+            ("测试用例集合", 30, "left"),
+        ]))
         print("-"*80)
 
         for path in report.coverage_groups:
-            print(
-                f"{path['coverage_signature']:<18} "
-                f"{path['covered_files']:>12} "
-                f"{path['covered_lines']:>12} "
-                f"{', '.join(path['testcases'])}"
-            )
+            print(format_table_row([
+                (path['coverage_signature'], 18, "left"),
+                (path['covered_files'], 12, "right"),
+                (path['covered_lines'], 12, "right"),
+                (', '.join(path['testcases']), 30, "left"),
+            ]))
 
         print("-"*80)
         print(f"总计 {len(report.coverage_groups)} 个覆盖行集合")
@@ -258,6 +327,7 @@ def print_detailed_stats(db):
     """打印详细统计信息"""
     cursor = db.conn.cursor()
     execution_paths = db.get_execution_paths_summary()
+    stable_paths = db.get_stable_paths_summary()
     coverage_groups = db.get_coverage_groups_summary()
     
     # Verifier 总代码行数
@@ -300,6 +370,7 @@ def print_detailed_stats(db):
     
     print("\n【路径统计】")
     print(f"  唯一执行路径数：{len(execution_paths)} 条")
+    print(f"  唯一稳定路径数：{len(stable_paths)} 条")
     print(f"  唯一覆盖行集合数：{len(coverage_groups)} 个")
     print(f"  测试用例总数：{total_test_cases} 个")
     
@@ -308,7 +379,13 @@ def print_detailed_stats(db):
     cursor.execute("SELECT id, name, path_hash, pc_count FROM test_cases ORDER BY name")
     testcases = cursor.fetchall()
     
-    print(f"\n  {'测试用例':<20} {'路径 PC 数':>10} {'唯一 PC 数':>12} {'覆盖行数':>10} {'行覆盖率':>12}")
+    print("\n  " + format_table_row([
+        ("测试用例", 20, "left"),
+        ("路径 PC 数", 10, "right"),
+        ("唯一 PC 数", 12, "right"),
+        ("覆盖行数", 10, "right"),
+        ("行覆盖率", 12, "right"),
+    ]))
     print("  " + "-"*66)
     
     for tc in testcases:
@@ -333,7 +410,13 @@ def print_detailed_stats(db):
         
         tc_line_coverage = (covered_lines / verifier_total_lines) * 100 if verifier_total_lines > 0 else 0.0
         
-        print(f"  {name:<20} {pc_count:>10} {unique_pcs:>12} {covered_lines:>10} {tc_line_coverage:>11.4f}%")
+        print("  " + format_table_row([
+            (name, 20, "left"),
+            (pc_count, 10, "right"),
+            (unique_pcs, 12, "right"),
+            (covered_lines, 10, "right"),
+            (f"{tc_line_coverage:>11.4f}%", 12, "right"),
+        ]))
     
     print("\n" + "="*70)
 
@@ -363,6 +446,7 @@ def main():
     # query 命令
     query_parser = subparsers.add_parser('query', help='查询覆盖率信息')
     query_parser.add_argument('--execution-paths', action='store_true', help='查询当前执行路径摘要')
+    query_parser.add_argument('--stable-paths', action='store_true', help='查询当前稳定路径摘要')
     query_parser.add_argument('--coverage-groups', action='store_true', help='查询当前覆盖行集合摘要')
     query_parser.add_argument('--testcase', '-tc', help='查询指定测试用例的覆盖详情')
     query_parser.add_argument('--file', '-f', help='查询文件覆盖情况')

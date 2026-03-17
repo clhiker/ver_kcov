@@ -40,6 +40,9 @@ class Config:
     
     # 并行工作进程数
     parallel_workers: int = 4
+
+    # 稳定路径的源码行分桶大小
+    stable_path_line_bucket: int = 64
     
     use_llvm_symbolizer: bool = True
     
@@ -83,6 +86,8 @@ class Config:
                     config.log_level = data['log_level']
                 if 'parallel_workers' in data:
                     config.parallel_workers = data['parallel_workers']
+                if 'stable_path_line_bucket' in data:
+                    config.stable_path_line_bucket = data['stable_path_line_bucket']
                 if 'use_llvm_symbolizer' in data:
                     config.use_llvm_symbolizer = data['use_llvm_symbolizer']
         
@@ -102,6 +107,7 @@ class Config:
             'lookup_table_cache': self.lookup_table_cache,
             'log_level': self.log_level,
             'parallel_workers': self.parallel_workers,
+            'stable_path_line_bucket': self.stable_path_line_bucket,
             'use_llvm_symbolizer': self.use_llvm_symbolizer
         }
         

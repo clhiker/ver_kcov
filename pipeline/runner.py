@@ -5,7 +5,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Set, Optional, Tuple
 from datetime import datetime
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
@@ -14,6 +14,7 @@ from multiprocessing import Pool, cpu_count
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.config import Config
+from utils.terminal_format import format_table_row
 from core.kcov_collector import KCOVCollector
 from core.path_fingerprinter import PathFingerprinter, PathFingerprint
 from core.pc_resolver import PCResolver, SourceLocation
@@ -36,6 +37,7 @@ class CoveragePipeline:
             'successful': 0,
             'failed': 0,
             'unique_paths': 0,
+            'unique_stable_paths': 0,
             'covered_lines': 0
         }
     
@@ -135,7 +137,12 @@ class CoveragePipeline:
             print("\n" + "-"*60)
             print("[*] 本次运行的测试用例覆盖详情")
             print("-"*60)
-            print(f"{'测试用例':<30} {'覆盖行数':<12} {'唯一行数':<12} {'状态':<10}")
+            print(format_table_row([
+                ("测试用例", 40, "left"),
+                ("覆盖行数", 12, "right"),
+                ("唯一行数", 12, "right"),
+                ("状态", 10, "left"),
+            ]))
             print("-"*70)
             
             # 只显示本次运行的测试用例
@@ -166,7 +173,12 @@ class CoveragePipeline:
                 name = testcase_name
                 if len(name) > 38:
                     name = name[:35] + "..."
-                print(f"{name:<40} {covered_lines:<12} {unique_lines:<12} {status:<10}")
+                print(format_table_row([
+                    (name, 40, "left"),
+                    (covered_lines, 12, "right"),
+                    (unique_lines, 12, "right"),
+                    (status, 10, "left"),
+                ]))
             print("-"*70)
         
         print(f"[*] 耗时：{duration:.2f} 秒")
@@ -208,6 +220,7 @@ class CoveragePipeline:
                     name=Path(testcase).name,
                     path=testcase,
                     path_hash=fingerprint.path_id,
+                    stable_path_hash="",
                     pc_count=fingerprint.pc_count,
                     raw_pc_count=fingerprint.raw_count,
                     compression_rate=fingerprint.compression_rate
@@ -227,7 +240,9 @@ class CoveragePipeline:
                     pcs=[],
                     pc_count=0,
                     raw_count=0,
-                    compression_rate=0.0
+                    compression_rate=0.0,
+                    stable_path_id="",
+                    stable_sequence=[]
                 )
         
         print()  # 换行
@@ -274,6 +289,10 @@ class CoveragePipeline:
             # 合并到查找表
             self.resolver._lookup_table.update(missing_locations)
         
+        normalized_sequences = self._build_normalized_verifier_sequences(testcase_to_pcs)
+        stable_sequences = self._build_stable_path_sequences(normalized_sequences)
+        stable_path_ids: Set[str] = set()
+
         # 步骤 3: 为每个测试用例独立保存源码覆盖信息
         for testcase_name, pcs in tqdm(testcase_to_pcs.items(), desc="保存测试用例覆盖"):
             # 获取测试用例 ID
@@ -287,6 +306,17 @@ class CoveragePipeline:
             testcase_id = row['id']
             fingerprint = fingerprints[testcase_name]
             path_id = fingerprint.path_id
+            fingerprint.stable_sequence = stable_sequences.get(testcase_name, [])
+            fingerprint.stable_path_id = self.fingerprinter.compute_stable_hash(fingerprint.stable_sequence) if fingerprint.stable_sequence else ""
+            if fingerprint.stable_path_id:
+                stable_path_ids.add(fingerprint.stable_path_id)
+
+            cursor.execute('''
+                UPDATE test_cases
+                SET stable_path_hash = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (fingerprint.stable_path_id, testcase_id))
+            self.db.conn.commit()
             
             # 直接从查找表获取该测试用例的源码位置
             locations = []
@@ -304,6 +334,11 @@ class CoveragePipeline:
             sequence = self._build_execution_path_sequence(pcs)
             if sequence:
                 self.db.save_execution_path_sequence(path_id, sequence)
+
+            if fingerprint.stable_path_id and fingerprint.stable_sequence:
+                self.db.save_stable_path_sequence(fingerprint.stable_path_id, fingerprint.stable_sequence)
+
+        self.stats['unique_stable_paths'] = len(stable_path_ids)
 
     def _build_execution_path_sequence(self, pcs: List[str]) -> Dict[str, List[int]]:
         """按原始 PC 顺序构建最内层源码行轨迹。"""
@@ -326,6 +361,79 @@ class CoveragePipeline:
             last_seen[loc.file] = loc.line
 
         return sequences
+
+    def _build_normalized_verifier_sequences(self, testcase_to_pcs: Dict[str, List[str]]) -> Dict[str, List[Tuple[str, int]]]:
+        """将原始 PC 序列归一化为 verifier.c 内的事件序列。"""
+        sequences: Dict[str, List[Tuple[str, int]]] = {}
+
+        for testcase_name, pcs in testcase_to_pcs.items():
+            normalized: List[Tuple[str, int]] = []
+            last_event: Optional[Tuple[str, int]] = None
+
+            for pc in pcs:
+                locations = self.resolver._lookup_table.get(pc, [])
+                if not locations:
+                    continue
+
+                loc = locations[0]
+                if not loc.file.endswith("kernel/bpf/verifier.c") or loc.line <= 0:
+                    continue
+
+                event = (loc.function or "?", loc.line)
+                if event == last_event:
+                    continue
+
+                normalized.append(event)
+                last_event = event
+
+            sequences[testcase_name] = normalized
+
+        return sequences
+
+    def _build_stable_path_sequences(self, normalized_sequences: Dict[str, List[Tuple[str, int]]]) -> Dict[str, List[str]]:
+        """提取跨运行更稳定的控制流骨架。"""
+        predecessors: Dict[Tuple[str, int], Set[Tuple[str, int]]] = {}
+        successors: Dict[Tuple[str, int], Set[Tuple[str, int]]] = {}
+        line_bucket = max(1, int(self.config.stable_path_line_bucket))
+
+        for sequence in normalized_sequences.values():
+            for event in sequence:
+                predecessors.setdefault(event, set())
+                successors.setdefault(event, set())
+            for current_event, next_event in zip(sequence, sequence[1:]):
+                successors.setdefault(current_event, set()).add(next_event)
+                predecessors.setdefault(next_event, set()).add(current_event)
+
+        stable_sequences: Dict[str, List[str]] = {}
+        for testcase_name, sequence in normalized_sequences.items():
+            anchors: List[str] = []
+            seen_anchors: Set[str] = set()
+
+            for index, event in enumerate(sequence):
+                prev_event = sequence[index - 1] if index > 0 else None
+                next_event = sequence[index + 1] if index + 1 < len(sequence) else None
+
+                is_anchor = (
+                    index == 0
+                    or index == len(sequence) - 1
+                    or (prev_event is not None and prev_event[0] != event[0])
+                    or (next_event is not None and next_event[0] != event[0])
+                    or len(predecessors.get(event, set())) > 1
+                    or len(successors.get(event, set())) > 1
+                )
+
+                if not is_anchor:
+                    continue
+
+                bucketed_line = (event[1] // line_bucket) * line_bucket
+                anchor = f"{event[0]}:{bucketed_line}"
+                if anchor not in seen_anchors:
+                    anchors.append(anchor)
+                    seen_anchors.add(anchor)
+
+            stable_sequences[testcase_name] = anchors
+
+        return stable_sequences
     
     def get_stats(self) -> dict:
         """获取统计信息"""

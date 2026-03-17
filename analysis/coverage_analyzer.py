@@ -16,6 +16,7 @@ class CoverageReport:
     """覆盖率报告"""
     total_test_cases: int
     unique_execution_paths: int
+    unique_stable_paths: int
     unique_coverage_groups: int
     covered_files: int
     covered_lines: int
@@ -38,6 +39,7 @@ class CoverageReport:
         return {
             'total_test_cases': self.total_test_cases,
             'unique_execution_paths': self.unique_execution_paths,
+            'unique_stable_paths': self.unique_stable_paths,
             'unique_coverage_groups': self.unique_coverage_groups,
             'covered_files': self.covered_files,
             'covered_lines': self.covered_lines,
@@ -72,6 +74,7 @@ class CoverageAnalyzer:
         report = CoverageReport(
             total_test_cases=stats['total_test_cases'],
             unique_execution_paths=stats['unique_execution_paths'],
+            unique_stable_paths=stats['unique_stable_paths'],
             unique_coverage_groups=stats['unique_coverage_groups'],
             covered_files=stats['covered_files'],
             covered_lines=stats['covered_lines'],
@@ -253,6 +256,7 @@ class CoverageAnalyzer:
             
             f.write(f"测试用例总数：{report.total_test_cases}\n")
             f.write(f"唯一执行路径数：{report.unique_execution_paths}\n")
+            f.write(f"唯一稳定路径数：{report.unique_stable_paths}\n")
             f.write(f"唯一覆盖行集合数：{report.unique_coverage_groups}\n")
             f.write(f"覆盖文件数：{report.covered_files}\n")
             f.write(f"覆盖行数：{report.covered_lines}\n")
