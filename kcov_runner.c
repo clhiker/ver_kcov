@@ -248,15 +248,21 @@ static void print_pcs(struct kcov_context *ctx)
  * 加载并验证 eBPF 程序
  * 这会触发内核中的 verifier 执行
  */
-static int load_and_verify_bpf(const char *bpf_file)
+static int load_and_verify_bpf(const char *bpf_file, const char *prog_name)
 {
     struct bpf_object *obj = NULL;
     int err;
+    struct bpf_object_open_opts opts = {0};
     
     DEBUG_PRINT(1, "加载 eBPF 程序：%s", bpf_file);
     
+    opts.sz = sizeof(struct bpf_object_open_opts);
+    if (prog_name) {
+        opts.object_name = prog_name;
+    }
+    
     /* 打开 BPF 对象文件 */
-    obj = bpf_object__open_file(bpf_file, NULL);
+    obj = bpf_object__open_file(bpf_file, &opts);
     if (libbpf_get_error(obj)) {
         fprintf(stderr, "[ERROR] 打开 BPF 文件失败：%s\n", bpf_file);
         return -1;
@@ -290,6 +296,7 @@ int main(int argc, char *argv[])
     struct kcov_context ctx = {0};
     const char *bpf_file;
     const char *output_file = OUTPUT_FILE;
+    const char *prog_name = NULL;
     int ret = 0;
     
     /* 解析命令行参数 */
@@ -298,6 +305,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "选项:\n");
         fprintf(stderr, "  -v, --verbose    显示调试信息\n");
         fprintf(stderr, "  -o, --output     指定输出文件 (默认：%s)\n", OUTPUT_FILE);
+        fprintf(stderr, "  -n, --name       挂载对象名称，用于解决并发冲突\n");
         fprintf(stderr, "  -h, --help       显示帮助\n");
         return 1;
     }
@@ -311,6 +319,9 @@ int main(int argc, char *argv[])
         } else if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0) &&
                    i + 1 < argc) {
             output_file = argv[++i];
+        } else if ((strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--name") == 0) &&
+                   i + 1 < argc) {
+            prog_name = argv[++i];
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             return 0;
         }
@@ -339,7 +350,7 @@ int main(int argc, char *argv[])
     
     /* 步骤 3: 加载并验证 BPF 程序 */
     /* 这会触发 verifier，KCOV 会收集执行路径 */
-    int verify_result = load_and_verify_bpf(bpf_file);
+    int verify_result = load_and_verify_bpf(bpf_file, prog_name);
     
     /* 步骤 4: 禁用 KCOV - 无论验证成功还是失败，都要禁用并收集数据 */
     if (kcov_disable(&ctx) < 0) {

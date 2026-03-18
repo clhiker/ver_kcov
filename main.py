@@ -16,7 +16,14 @@ def cmd_run(args):
     """运行覆盖率采集"""
     config = load_config(args.config)
     
-    with CoveragePipeline(config) as pipeline:
+    if args.parallel:
+        from pipeline.parallel_runner import ParallelCoveragePipeline
+        pipeline_cls = ParallelCoveragePipeline
+    else:
+        from pipeline.runner import CoveragePipeline
+        pipeline_cls = CoveragePipeline
+        
+    with pipeline_cls(config) as pipeline:
         stats = pipeline.run(
             testcase_dir=args.testcases,
             parallel=args.parallel

@@ -100,12 +100,22 @@ sudo python3 main.py run
 sudo python3 main.py run -t testcases
 ```
 
+如果测试用例很多，可以开启并发（多进程）采集来大幅提升效率：
+
+```bash
+sudo python3 main.py run -t testcases -p
+```
+
 ## 命令
 
 ### 采集
 
 ```bash
+# 单进程采集
 sudo python3 main.py run -t testcases  
+
+# 多进程并发采集（推荐测试用例较多时使用）
+sudo python3 main.py run -t testcases -p
 ```
 
 ### 分析
@@ -196,18 +206,37 @@ stable_path_line_bucket: 64
 - 区分不同 verifier 执行轨迹
 - 查询入口：`query --execution-paths`
 
-### 稳定路径
+### 稳定路径 (Stable Path)
 
-稳定路径由 `verifier.c` 内的归一化控制流骨架生成 `stable_path_hash`。
-stable_path 的规则是：只看 verifier.c，先做事件归一化，再抽取锚点，最后对行号按 64 行分桶并按首次出现去重。
-这个分组比原始 PC 序列稳定得多，但仍保留顺序语义
+稳定路径是该项目的核心概念，旨在解决原始执行轨迹（PC序列）由于循环次数微小抖动或无关分支变动导致哈希“碎片化”的问题。它由 `verifier.c` 内的归一化控制流骨架生成 `stable_path_hash`。
 
-特点：
+**稳定路径算法的核心步骤如下：**
 
-- 保留粗粒度顺序信息
-- 忽略一部分重复回环和局部动态抖动
-- 适合做“相对稳定”的路径分组
-- 查询入口：`query --stable-paths`
+1. **事件归一化 (Event Normalization):**
+   - 过滤掉所有不属于 `kernel/bpf/verifier.c` 的源码位置。
+   - 将原始的执行序列映射为 `(function_name, line_number)` 对的连续事件组，并去除连续重复的同一事件。
+
+2. **锚点提取 (Anchor Extraction):**
+   并非轨迹上的每行代码都会被保留，算法只选取具有控制流结构代表性的“锚点 (Anchor)”：
+   - 序列的**首个事件**和**末尾事件**。
+   - **函数边界**：当上一个事件或下一个事件位于不同的函数时（即发生了函数调用或返回）。
+   - **分支节点**：在全局轨迹中具有多个前驱 (Predecessors) 或多个后继 (Successors) 的控制流收束与分叉点。
+
+3. **行号分桶 (Line Bucketing):**
+   - 对于选出的锚点，不直接使用其绝对行号，而是按照一个可配置的步长（默认 `64` 行，见 `config/kcov_config.yaml` 中的 `stable_path_line_bucket`）向下取整进行“分桶 (Bucket)”。
+   - 例如，行号 3030 会被分桶为 `3008` (3030 // 64 * 64)。这一步有效消减了内核版本微小迭代或极小范围内的线性指令顺序带来的波动。
+
+4. **序列去重生成特征串:**
+   - 使用格式化的 `{function_name}:{bucketed_line}` 表示每个锚点。
+   - 保留首次出现的锚点列表并**严格保持到达顺序**，但在同一序列中再次出现的相同锚点（例如某个大循环内的小内部循环）将被丢弃去重。
+   - 将这些有序特征串连接并做 `SHA-256` 哈希，取前 16 位，即为最终的 `stable_path_hash`。
+
+**特点与用途：**
+
+- 保留了粗粒度的**顺序信息**与核心验证流。
+- 有效忽略了一部分重复嵌套回环和局部动态抖动。
+- 极大收敛了本质相同的验证案例流，适合做“相对稳定”的路径聚类分组（如按大类型的 BPF 验证路径分组）。
+- 查询入口：`query --stable-paths` （带上 `-v` 可显示归一化后保留的锚点序列）。
 
 ### 覆盖行集合
 
@@ -290,6 +319,9 @@ PY
 # 虚拟机执行方法
 cd ~/workspace/image
 ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
+mount -t 9p -o trans=virtio,version=9p2000.L bpf /mnt/root
+mkdir -p /sys/fs/bpf
+mount -t bpf bpf /sys/fs/bpf
 
 ## 虚拟机内操作
 cd /mnt/root 进入代码目录
