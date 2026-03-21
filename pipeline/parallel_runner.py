@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import List, Dict, Set, Optional, Tuple
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import time
+import random
 
 from pipeline.runner import CoveragePipeline
 from core.path_fingerprinter import PathFingerprinter, PathFingerprint
@@ -71,7 +73,8 @@ def _parallel_db_write_worker(testcase_name: str, path_id: str,
                             stable_sequence: List[str], stable_path_id: str,
                             sequence: Dict[str, List[int]],
                             locations_dicts: List[Dict],
-                            config: Config) -> bool:
+                            config: Config,
+                            path_type: str = 'all') -> bool:
     """
     独立进程写库工作者
     """
@@ -95,13 +98,13 @@ def _parallel_db_write_worker(testcase_name: str, path_id: str,
         ''', (stable_path_id, testcase_id))
         db.conn.commit()
         
-        if locations_dicts:
+        if path_type in ('full', 'all') and locations_dicts:
             db.batch_save_source_coverage(testcase_id, path_id, locations_dicts)
             
-        if sequence:
+        if path_type in ('full', 'all') and sequence:
             db.save_execution_path_sequence(path_id, sequence)
             
-        if stable_path_id and stable_sequence:
+        if path_type in ('stable', 'all') and stable_path_id and stable_sequence:
             db.save_stable_path_sequence(stable_path_id, stable_sequence)
             
         return True
@@ -144,7 +147,7 @@ class ParallelCoveragePipeline(CoveragePipeline):
         print()  # 换行
         return all_fingerprints
 
-    def _save_to_database(self, fingerprints: Dict[str, PathFingerprint]):
+    def _save_to_database(self, fingerprints: Dict[str, PathFingerprint], path_type: str = 'all'):
         """解析源码位置并保存到数据库（多进程并行保存）"""
         testcase_to_pcs = {}
         all_pcs_needed = set()
@@ -164,8 +167,12 @@ class ParallelCoveragePipeline(CoveragePipeline):
             self.resolver._lookup_table.update(missing_locations)
         
         # 获取序列
-        normalized_sequences = self._build_normalized_verifier_sequences(testcase_to_pcs)
-        stable_sequences = self._build_stable_path_sequences(normalized_sequences)
+        if path_type in ('stable', 'all'):
+            normalized_sequences = self._build_normalized_verifier_sequences(testcase_to_pcs)
+            stable_sequences = self._build_stable_path_sequences(normalized_sequences)
+        else:
+            stable_sequences = {}
+            
         stable_path_ids: Set[str] = set()
         
         workers = getattr(self.config, 'parallel_workers', max(1, os.cpu_count() - 1))
@@ -186,22 +193,25 @@ class ParallelCoveragePipeline(CoveragePipeline):
                 if fingerprint.stable_path_id:
                     stable_path_ids.add(fingerprint.stable_path_id)
                 
-                # 构建 locations
-                locations = []
-                for pc in pcs:
-                    if pc in self.resolver._lookup_table:
-                        locations.extend(self.resolver._lookup_table[pc])
-                loc_dicts = [loc.to_dict() for loc in locations if loc.file and loc.line > 0]
-                
-                # 构建 sequence
-                sequence = self._build_execution_path_sequence(pcs)
+                # 构建 locations 和 sequence
+                if path_type in ('full', 'all'):
+                    locations = []
+                    for pc in pcs:
+                        if pc in self.resolver._lookup_table:
+                            locations.extend(self.resolver._lookup_table[pc])
+                    loc_dicts = [loc.to_dict() for loc in locations if loc.file and loc.line > 0]
+                    
+                    sequence = self._build_execution_path_sequence(pcs)
+                else:
+                    loc_dicts = []
+                    sequence = {}
                 
                 # 提交数据库写任务
                 futures.append(
                     executor.submit(_parallel_db_write_worker, 
                                     testcase_name, path_id, 
                                     fingerprint.stable_sequence, fingerprint.stable_path_id,
-                                    sequence, loc_dicts, self.config)
+                                    sequence, loc_dicts, self.config, path_type)
                 )
                 
             for future in tqdm(as_completed(futures), total=len(futures), desc="并发入库源码覆盖"):

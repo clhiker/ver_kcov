@@ -43,7 +43,8 @@ class CoveragePipeline:
     
     def run(self, testcase_dir: Optional[str] = None, 
             parallel: bool = False,
-            workers: int = 0) -> dict:
+            workers: int = 0,
+            path_type: str = 'all') -> dict:
         """
         运行完整的覆盖率采集流水线
         
@@ -69,10 +70,9 @@ class CoveragePipeline:
         print(f"[*] 开始覆盖率采集流水线")
         print(f"[*] 测试用例目录：{testcase_dir}")
         print(f"[*] 并行模式：{'开启' if parallel else '关闭'}")
+        print(f"[*] 路径类型：{path_type}")
         
-        # 清空旧数据
-        print("\n[*] 清空数据库中的旧数据...")
-        self.db.clear_all_data()
+        # 不再自动清空旧数据，由专门的 clear 指令处理
         
         # 步骤 1: 发现测试用例
         testcases = self._discover_testcases(testcase_dir)
@@ -113,7 +113,7 @@ class CoveragePipeline:
         
         # 步骤 5 & 6: 解析源码并保存到数据库
         print("\n[*] 阶段 3: 解析源码位置并保存到数据库")
-        self._save_to_database(all_fingerprints)
+        self._save_to_database(all_fingerprints, path_type=path_type)
         
         # 计算覆盖的行数
         db_stats = self.db.get_coverage_statistics()
@@ -266,7 +266,7 @@ class CoveragePipeline:
         
         return unique_pcs
     
-    def _save_to_database(self, fingerprints: Dict[str, PathFingerprint]):
+    def _save_to_database(self, fingerprints: Dict[str, PathFingerprint], path_type: str = 'all'):
         """解析源码位置并保存到数据库"""
         # 步骤 1: 按测试用例组织需要解析的 PC
         testcase_to_pcs = {}
@@ -289,8 +289,12 @@ class CoveragePipeline:
             # 合并到查找表
             self.resolver._lookup_table.update(missing_locations)
         
-        normalized_sequences = self._build_normalized_verifier_sequences(testcase_to_pcs)
-        stable_sequences = self._build_stable_path_sequences(normalized_sequences)
+        if path_type in ('stable', 'all'):
+            normalized_sequences = self._build_normalized_verifier_sequences(testcase_to_pcs)
+            stable_sequences = self._build_stable_path_sequences(normalized_sequences)
+        else:
+            stable_sequences = {}
+            
         stable_path_ids: Set[str] = set()
 
         # 步骤 3: 为每个测试用例独立保存源码覆盖信息
@@ -306,6 +310,7 @@ class CoveragePipeline:
             testcase_id = row['id']
             fingerprint = fingerprints[testcase_name]
             path_id = fingerprint.path_id
+            # 稳定路径信息的更新总是必要，但内容可能为空
             fingerprint.stable_sequence = stable_sequences.get(testcase_name, [])
             fingerprint.stable_path_id = self.fingerprinter.compute_stable_hash(fingerprint.stable_sequence) if fingerprint.stable_sequence else ""
             if fingerprint.stable_path_id:
@@ -318,24 +323,25 @@ class CoveragePipeline:
             ''', (fingerprint.stable_path_id, testcase_id))
             self.db.conn.commit()
             
-            # 直接从查找表获取该测试用例的源码位置
-            locations = []
-            for pc in pcs:
-                if pc in self.resolver._lookup_table:
-                    locations.extend(self.resolver._lookup_table[pc])
-            
-            # 转换为字典格式
-            loc_dicts = [loc.to_dict() for loc in locations if loc.file and loc.line > 0]
-            
-            # 批量保存（按 testcase_id 保存）
-            if loc_dicts:
-                self.db.batch_save_source_coverage(testcase_id, path_id, loc_dicts)
+            if path_type in ('full', 'all'):
+                # 直接从查找表获取该测试用例的源码位置
+                locations = []
+                for pc in pcs:
+                    if pc in self.resolver._lookup_table:
+                        locations.extend(self.resolver._lookup_table[pc])
+                
+                # 转换为字典格式
+                loc_dicts = [loc.to_dict() for loc in locations if loc.file and loc.line > 0]
+                
+                # 批量保存（按 testcase_id 保存）
+                if loc_dicts:
+                    self.db.batch_save_source_coverage(testcase_id, path_id, loc_dicts)
 
-            sequence = self._build_execution_path_sequence(pcs)
-            if sequence:
-                self.db.save_execution_path_sequence(path_id, sequence)
+                sequence = self._build_execution_path_sequence(pcs)
+                if sequence:
+                    self.db.save_execution_path_sequence(path_id, sequence)
 
-            if fingerprint.stable_path_id and fingerprint.stable_sequence:
+            if path_type in ('stable', 'all') and fingerprint.stable_path_id and fingerprint.stable_sequence:
                 self.db.save_stable_path_sequence(fingerprint.stable_path_id, fingerprint.stable_sequence)
 
         self.stats['unique_stable_paths'] = len(stable_path_ids)

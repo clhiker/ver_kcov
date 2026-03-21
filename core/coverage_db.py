@@ -33,7 +33,8 @@ class CoverageDatabase:
     
     def _init_database(self):
         """初始化数据库连接和表结构"""
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, timeout=60.0)
+        self.conn.execute('PRAGMA journal_mode = WAL;')
         self.conn.row_factory = sqlite3.Row  # 支持字典访问
         self._create_tables()
     

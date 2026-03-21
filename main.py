@@ -26,11 +26,21 @@ def cmd_run(args):
     with pipeline_cls(config) as pipeline:
         stats = pipeline.run(
             testcase_dir=args.testcases,
-            parallel=args.parallel
+            parallel=args.parallel,
+            path_type=args.path_type
         )
         
         if stats['failed'] > 0:
             sys.exit(1)
+
+
+def cmd_clear(args):
+    """清空覆盖率数据"""
+    config = load_config(args.config)
+    print("\n[*] 正在清空数据库中的旧数据...")
+    with CoverageDatabase(config.db_path) as db:
+        db.clear_all_data()
+    print("[*] 清理完成。\n")
 
 
 def cmd_analyze(args):
@@ -440,7 +450,13 @@ def main():
     run_parser.add_argument('--testcases', '-t', help='测试用例目录')
     run_parser.add_argument('--parallel', '-p', action='store_true', 
                            help='启用并行处理')
+    run_parser.add_argument('--path-type', choices=['stable', 'full', 'all'], 
+                           default='all', help='选择采集的路径类型：stable (仅稳定路径), full (完整执行路径及源码覆盖), all (两者皆采)')
     run_parser.set_defaults(func=cmd_run)
+    
+    # clear 命令
+    clear_parser = subparsers.add_parser('clear', help='清空数据库中的原有覆盖率数据')
+    clear_parser.set_defaults(func=cmd_clear)
     
     # analyze 命令
     analyze_parser = subparsers.add_parser('analyze', help='分析覆盖率数据')

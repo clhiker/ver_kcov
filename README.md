@@ -35,6 +35,19 @@ ver_kcov/
 └── README.md
 ```
 
+## 服务启动
+我们在虚拟机中执行测试
+cd ~/workspace/image
+ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
+mount -t 9p -o trans=virtio,version=9p2000.L bpf /mnt/root
+mkdir -p /sys/fs/bpf
+mount -t bpf bpf /sys/fs/bpf
+
+## 虚拟机内操作
+cd /mnt/root 进入代码目录
+接下来执行上述命令即可，不需要再使用sudo，因为此时已经是root权限了
+
+
 ## 环境要求
 
 - Linux 内核启用 `CONFIG_KCOV=y`
@@ -315,14 +328,3 @@ PY
 - [pipeline/runner.py](/home/clhiker/ver_kcov/pipeline/runner.py) 负责完整流水线
 - [core/coverage_db.py](/home/clhiker/ver_kcov/core/coverage_db.py) 负责数据库存储与查询
 
-
-# 虚拟机执行方法
-cd ~/workspace/image
-ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
-mount -t 9p -o trans=virtio,version=9p2000.L bpf /mnt/root
-mkdir -p /sys/fs/bpf
-mount -t bpf bpf /sys/fs/bpf
-
-## 虚拟机内操作
-cd /mnt/root 进入代码目录
-接下来执行上述命令即可，不需要再使用sudo，因为此时已经是root权限了
