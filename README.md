@@ -39,7 +39,8 @@ ver_kcov/
 我们在虚拟机中执行测试
 cd ~/workspace/image
 ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
-mount -t 9p -o trans=virtio,version=9p2000.L bpf /mnt/root
+mount -t virtiofs hostshare /mnt/root
+mount -t debugfs none /sys/kernel/debug
 mkdir -p /sys/fs/bpf
 mount -t bpf bpf /sys/fs/bpf
 
@@ -96,39 +97,44 @@ make
 
 ### 4. 运行采集
 
-`run` 需要 `sudo`。并且它会清理本次运行相关产物：
-
-- 数据库旧数据
-- PC lookup cache
-- 结果目录
-- 遗留的 `verifier_pcs.txt`
+由于直接运行 `run` 不再自动清空数据库中的历史痕迹，如果需要重新开始，必须先执行数据的清理：
 
 ```bash
-sudo python3 main.py run
+python3 main.py clear
 ```
 
-指定测试用例目录：
+然后执行路径采集（在虚拟机 root 环境中不再需要 sudo）：
 
 ```bash
-sudo python3 main.py run -t testcases
+# 默认采集所有信息（完整源码覆盖 + 稳定骨架）
+python3 main.py run -t testcases
+
+# 仅抽取稳定路径骨架（极大提升速度，降低数据库体积）
+python3 main.py run -t testcases --path-type stable
+
+# 同时执行稳定路径和提取每条语句的全量上下文
+python3 main.py run -t testcases --path-type full
 ```
 
 如果测试用例很多，可以开启并发（多进程）采集来大幅提升效率：
 
 ```bash
-sudo python3 main.py run -t testcases -p
+python3 main.py run -t testcases --path-type full -p
 ```
 
 ## 命令
 
-### 采集
+### 清理与采集
 
 ```bash
-# 单进程采集
-sudo python3 main.py run -t testcases  
+# 清空数据库原有数据
+python3 main.py clear
+
+# 单进程采集（指定路径类型：stable 或 full，默认为 all）
+python3 main.py run -t testcases --path-type stable
 
 # 多进程并发采集（推荐测试用例较多时使用）
-sudo python3 main.py run -t testcases -p
+python3 main.py run -t testcases -p
 ```
 
 ### 分析
