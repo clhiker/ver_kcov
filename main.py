@@ -80,6 +80,7 @@ def cmd_query(args):
                 ("path_hash", 18, "left"),
                 ("PC 数", 10, "right"),
                 ("覆盖行数", 12, "right"),
+                ("用例数", 8, "right"),
                 ("测试用例集合", 30, "left"),
             ]))
             print("-"*80)
@@ -89,6 +90,7 @@ def cmd_query(args):
                     (path['path_hash'], 18, "left"),
                     (path['pc_count'], 10, "right"),
                     (path['covered_lines'], 12, "right"),
+                    (len(path['testcases']), 8, "right"),
                     (', '.join(path['testcases']), 30, "left"),
                 ]))
                 if args.verbose:
@@ -119,6 +121,7 @@ def cmd_query(args):
                 ("stable_hash", 18, "left"),
                 ("锚点数", 10, "right"),
                 ("覆盖行数", 12, "right"),
+                ("用例数", 8, "right"),
                 ("测试用例集合", 30, "left"),
             ]))
             print("-"*80)
@@ -128,6 +131,7 @@ def cmd_query(args):
                     (path['stable_path_hash'], 18, "left"),
                     (path['anchor_count'], 10, "right"),
                     (path['covered_lines'], 12, "right"),
+                    (len(path['testcases']), 8, "right"),
                     (', '.join(path['testcases']), 30, "left"),
                 ]))
                 if args.verbose:
@@ -156,6 +160,7 @@ def cmd_query(args):
                 ("覆盖签名", 18, "left"),
                 ("覆盖文件数", 12, "right"),
                 ("覆盖行数", 12, "right"),
+                ("用例数", 8, "right"),
                 ("测试用例集合", 30, "left"),
             ]))
             print("-"*80)
@@ -165,6 +170,7 @@ def cmd_query(args):
                     (path['coverage_signature'], 18, "left"),
                     (path['covered_files'], 12, "right"),
                     (path['covered_lines'], 12, "right"),
+                    (len(path['testcases']), 8, "right"),
                     (', '.join(path['testcases']), 30, "left"),
                 ]))
                 if args.verbose and path['files']:
