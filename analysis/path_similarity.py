@@ -42,11 +42,12 @@ def analyze_paths(db_path, path_type='stable'):
     ''')
     
     path_counts = cursor.fetchall()
-    print(f"=== {path_type.upper()} PATHS ===")
-    print(f"Total Unique {path_type.capitalize()} Paths: {len(path_counts)}")
-    print(f"\n--- Top 10 {path_type.capitalize()} Paths by Testcase Count ---")
+    path_type_str = "稳定路径 (Stable)" if path_type == 'stable' else "执行路径 (Execution)"
+    print(f"=== {path_type_str} 分布统计 ===")
+    print(f"总计唯一 {path_type_str} 数量: {len(path_counts)}")
+    print(f"\n--- 触发测试用例最多的 Top 10 {path_type_str} ---")
     for row in path_counts[:10]:
-        print(f"Hash: {row[hash_column]} -> Testcases: {row['tc_count']}")
+        print(f"哈希值: {row[hash_column]} -> 用例数: {row['tc_count']}")
     
     # Fetch sequences for top paths to compute similarity
     top_hashes = [row[hash_column] for row in path_counts[:10]]
@@ -71,9 +72,9 @@ def analyze_paths(db_path, path_type='stable'):
         except Exception as e:
             sequences[h] = []
 
-    print("\n--- Pairwise Similarity (Top 5 vs Top 5) ---")
+    print("\n--- 路径相似度对比 (Top 5 两两对比) ---")
     top_5 = top_hashes[:5]
-    print("Hash1            | Hash2            | Node Jaccard | Sequence Ratio")
+    print("哈希 1           | 哈希 2           | 节点 Jaccard | 序列比对得分")
     print("-" * 70)
     for i, h1 in enumerate(top_5):
         for j, h2 in enumerate(top_5):
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         db = sys.argv[1]
     
-    print("Starting Deep Path Analysis...\n")
+    print("开始深度路径分析...\n")
     analyze_paths(db, 'stable')
     print("\n" + "="*70 + "\n")
     analyze_paths(db, 'execution')

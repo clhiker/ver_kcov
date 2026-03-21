@@ -135,50 +135,13 @@ def cmd_query(args):
                     (', '.join(path['testcases']), 30, "left"),
                 ]))
                 if args.verbose:
-                    print(f"  raw_paths: {', '.join(path['raw_paths'])}")
+                    print(f"  对应执行路径哈希: {', '.join(path['raw_paths'])}")
                     stable_sequence = db.get_stable_path_sequence(path['stable_path_hash'])
                     if stable_sequence:
-                        print(f"  anchors: {' -> '.join(stable_sequence)}")
+                        print(f"  锚点序列: {' -> '.join(stable_sequence)}")
 
             print("-"*80)
             print(f"总计 {len(paths)} 条稳定路径")
-            print("="*80)
-            return
-
-        if args.coverage_groups:
-            paths = db.get_coverage_groups_summary()
-            print("="*80)
-            print("覆盖行集合摘要")
-            print("="*80)
-
-            if not paths:
-                print("当前没有覆盖行集合数据")
-                print("="*80)
-                return
-
-            print(format_table_row([
-                ("覆盖签名", 18, "left"),
-                ("覆盖文件数", 12, "right"),
-                ("覆盖行数", 12, "right"),
-                ("用例数", 8, "right"),
-                ("测试用例集合", 30, "left"),
-            ]))
-            print("-"*80)
-
-            for path in paths:
-                print(format_table_row([
-                    (path['coverage_signature'], 18, "left"),
-                    (path['covered_files'], 12, "right"),
-                    (path['covered_lines'], 12, "right"),
-                    (len(path['testcases']), 8, "right"),
-                    (', '.join(path['testcases']), 30, "left"),
-                ]))
-                if args.verbose and path['files']:
-                    for file_path, lines in sorted(path['files'].items()):
-                        print(f"  {file_path}: {lines}")
-
-            print("-"*80)
-            print(f"总计 {len(paths)} 个覆盖行集合")
             print("="*80)
             return
 
@@ -476,7 +439,6 @@ def main():
     query_parser = subparsers.add_parser('query', help='查询覆盖率信息')
     query_parser.add_argument('--execution-paths', action='store_true', help='查询当前执行路径摘要')
     query_parser.add_argument('--stable-paths', action='store_true', help='查询当前稳定路径摘要')
-    query_parser.add_argument('--coverage-groups', action='store_true', help='查询当前覆盖行集合摘要')
     query_parser.add_argument('--testcase', '-tc', help='查询指定测试用例的覆盖详情')
     query_parser.add_argument('--file', '-f', help='查询文件覆盖情况')
     query_parser.add_argument('--line', '-l', help='查询覆盖指定行的测试用例 (格式：file:line)')
