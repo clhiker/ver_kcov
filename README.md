@@ -37,15 +37,22 @@ ver_kcov/
 
 ## 服务启动
 我们在虚拟机中执行测试
+```bash
 cd ~/workspace/image
 ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
+```
+
+## 挂载
+```bash
 mount -t virtiofs hostshare /mnt/root
 mount -t debugfs none /sys/kernel/debug
 mkdir -p /sys/fs/bpf
 mount -t bpf bpf /sys/fs/bpf
+cd /mnt/root
+```
 
 ## 虚拟机内操作
-cd /mnt/root 进入代码目录
+进入代码目录
 接下来执行上述命令即可，不需要再使用sudo，因为此时已经是root权限了
 
 
@@ -122,20 +129,6 @@ python3 main.py run -t testcases --path-type full
 python3 main.py run -t testcases --path-type full -p
 ```
 
-## 命令
-
-### 清理与采集
-
-```bash
-# 清空数据库原有数据
-python3 main.py clear
-
-# 单进程采集（指定路径类型：stable 或 full，默认为 all）
-python3 main.py run -t testcases --path-type stable
-
-# 多进程并发采集（推荐测试用例较多时使用）
-python3 main.py run -t testcases -p
-```
 
 ### 分析
 
@@ -166,17 +159,16 @@ python3 main.py query --stable-paths -v
 - `--stable-paths`：按稳定路径骨架区分
 - `-v`：打印对应原始 `path_hash` 集合和稳定骨架锚点序列
 
-覆盖行集合摘要：
+### 相似度与统计
+
+统计与分析前十大路径的用例分布以及他们之间的序列相似度（Jaccard 和序列比对）：
 
 ```bash
-python3 main.py query --coverage-groups
-python3 main.py query --coverage-groups -v
+python3 analysis/path_similarity.py
+# 或指定不同的 DB：python3 analysis/path_similarity.py my_database.db
 ```
 
-- `--coverage-groups`：按最终覆盖到的源码行集合区分
-- `-v`：展开每个文件覆盖到的行集合
-
-单个 testcase：
+单用例详情：
 
 ```bash
 python3 main.py query -tc 3.o
@@ -213,63 +205,47 @@ db_path: ../kcov_coverage.db
 stable_path_line_bucket: 64
 ```
 
-## 结果语义
+## 各类路径的设计思路与定义
 
-### 执行路径
+在捕捉 Linux 内核 BPF Verifier 这类极端复杂的系统状态时，单凭最基础的 PC 覆盖率难以衡量出“测试用例到底走了哪条验证逻辑”。为此，本项目设计出**两套差异化的路径概念**以满足不同的分析需要。
 
-执行路径由原始 KCOV PC 序列生成 `path_hash`。
+### 1. 完整执行路径 (Full / Execution Path)
 
-特点：
+**设计思路**：提供绝对真值，不丢失任何上下文。
+完整执行路径是由内核 KCOV 按照时间顺序吐出的**最原始 PC 轨迹**映射出的全量数组，代表程序执行流的完整快照。
 
-- 保留顺序信息
-- 区分不同 verifier 执行轨迹
-- 查询入口：`query --execution-paths`
+- **极度敏感**：即使目标循环多执行了一次、遇到一个无关紧要的小型分支（如临时的锁/打桩跳过逻辑），也会生成出两条**完全不同**的完整路径哈希 (`path_hash`)。
+- **优缺点分析**：
+  - **优势**：用于 100% 精确的 Crash 回放或深度诊断。只要两个执行路径的 hash 相同，说明它们的底层机器指令流完全 1:1 一比一复现。
+  - **劣势**：粒度过于“碎片化”。100 个本质完全相同的验证目标（例如测试 100 种无效的内存越界 read），在底层极易因为某个临时状态稍有不同，被分散识别成几十个独立执行路径。
+- **查询入口**：`query --execution-paths`
 
-### 稳定路径 (Stable Path)
+### 2. 稳定骨架路径 (Stable Path)
 
-稳定路径是该项目的核心概念，旨在解决原始执行轨迹（PC序列）由于循环次数微小抖动或无关分支变动导致哈希“碎片化”的问题。它由 `verifier.c` 内的归一化控制流骨架生成 `stable_path_hash`。
+**设计思路**：解决“完整路径”严重的碎片化现象，提取能代表“验证模式”逻辑的核心骨架。
+由于 Verifier 充满了各种验证黑盒、大循环（如遍历指令块 `do_check` 等），如何对相似逻辑的测试群聚？我们创新设计了**控制流稳定骨架提取算法**，产出 `stable_path_hash`：
 
-**稳定路径算法的核心步骤如下：**
+1. **事件归一化 (Event Normalization)**：
+   - 将所有散乱的 PC 全部合并为 `(函数名, 行号)` 的语义级事件序列，完全过滤掉不属于核心验证主逻辑（如在 `verifier.c` 之外引发）的过程调用。
+   - 去除连续重复的死循环命中行。
 
-1. **事件归一化 (Event Normalization):**
-   - 过滤掉所有不属于 `kernel/bpf/verifier.c` 的源码位置。
-   - 将原始的执行序列映射为 `(function_name, line_number)` 对的连续事件组，并去除连续重复的同一事件。
+2. **锚点择优选定 (Anchor Extraction)**：
+   并非所有语句都是代表逻辑的关键点。算法会自动剔除线性直走代码段，只保留：
+   - 序列的**始末跨度节点**。
+   - 所有会导致作用域跳跃的**函数边界**。
+   - 全局控制流交融的**核心分支/收束节点**。
 
-2. **锚点提取 (Anchor Extraction):**
-   并非轨迹上的每行代码都会被保留，算法只选取具有控制流结构代表性的“锚点 (Anchor)”：
-   - 序列的**首个事件**和**末尾事件**。
-   - **函数边界**：当上一个事件或下一个事件位于不同的函数时（即发生了函数调用或返回）。
-   - **分支节点**：在全局轨迹中具有多个前驱 (Predecessors) 或多个后继 (Successors) 的控制流收束与分叉点。
+3. **模糊行号分桶 (Line Bucketing)**：
+   - 由于不同内核版本间，核心分支可能会上下偏移几行（或者新增无关日志代码），算法并不使用绝对行号，而是配置了以块为单位的行号段（如向下按照 64 行抹平误差 `config.yaml: stable_path_line_bucket`）。
+   - 例如行号 `3030` 会被划入 `3008` 所在的块。
 
-3. **行号分桶 (Line Bucketing):**
-   - 对于选出的锚点，不直接使用其绝对行号，而是按照一个可配置的步长（默认 `64` 行，见 `config/kcov_config.yaml` 中的 `stable_path_line_bucket`）向下取整进行“分桶 (Bucket)”。
-   - 例如，行号 3030 会被分桶为 `3008` (3030 // 64 * 64)。这一步有效消减了内核版本微小迭代或极小范围内的线性指令顺序带来的波动。
+4. **序列去重**：
+   - 保留首个锚点的穿越顺序，彻底抛弃递归重入式的套娃。
 
-4. **序列去重生成特征串:**
-   - 使用格式化的 `{function_name}:{bucketed_line}` 表示每个锚点。
-   - 保留首次出现的锚点列表并**严格保持到达顺序**，但在同一序列中再次出现的相同锚点（例如某个大循环内的小内部循环）将被丢弃去重。
-   - 将这些有序特征串连接并做 `SHA-256` 哈希，取前 16 位，即为最终的 `stable_path_hash`。
+**意义**：
+相比于完整执行路径暴露出的几十、上百种零散轨迹，“稳定路径”完美地将**具有本质相同验证目标的测试用例**强势收敛为几个核心验证流。它让你在进行模糊测试或大型分析时不需要在汪洋大海里迷失：你可以依据**稳定路径**聚类去定位新触发的核心验证模式！
+- **查询入口**：`query --stable-paths -v`
 
-**特点与用途：**
-
-- 保留了粗粒度的**顺序信息**与核心验证流。
-- 有效忽略了一部分重复嵌套回环和局部动态抖动。
-- 极大收敛了本质相同的验证案例流，适合做“相对稳定”的路径聚类分组（如按大类型的 BPF 验证路径分组）。
-- 查询入口：`query --stable-paths` （带上 `-v` 可显示归一化后保留的锚点序列）。
-
-### 覆盖行集合
-
-覆盖行集合由 testcase 最终命中的 `file:line` 集合归并得到。
-
-特点：
-
-- 不保留顺序
-- 适合看“覆盖面是否一致”
-- 查询入口：`query --coverage-groups`
-
-### 单个 testcase 覆盖详情
-
-`query -tc` 显示的是该 testcase 命中的完整覆盖行，不等同于执行轨迹。
 
 ## 已知限制
 
@@ -277,12 +253,7 @@ stable_path_line_bucket: 64
 - `bpftool` 只适合作为调试手段，不是当前项目采集链路的一部分。
 - 更换 `vmlinux` 后必须重新执行：
 
-```bash
-python3 scripts/auto_config.py ./vmlinux ./config/kcov_config.yaml
-sudo python3 main.py run -t ...
-```
 
-不要继续复用旧数据库结果。
 
 ## 故障排查
 
@@ -307,15 +278,6 @@ zgrep KCOV /proc/config.gz
 - 是否重新执行过 `auto_config.py`
 - 是否重新执行过 `sudo python3 main.py run`
 
-### 3. 两个 testcase 看起来完全一样
-
-先确认不是旧数据库结果：
-
-```bash
-sudo python3 main.py run -t testcases/mini
-```
-
-`run` 会重新生成除配置外的运行产物，不应复用旧结果。
 
 ### 4. 手工验证配置
 
@@ -333,4 +295,3 @@ PY
 - [core/pc_resolver.py](/home/clhiker/ver_kcov/core/pc_resolver.py) 使用 `llvm-symbolizer` 批量解析 PC
 - [pipeline/runner.py](/home/clhiker/ver_kcov/pipeline/runner.py) 负责完整流水线
 - [core/coverage_db.py](/home/clhiker/ver_kcov/core/coverage_db.py) 负责数据库存储与查询
-

@@ -16,6 +16,24 @@ def jaccard_similarity(list1, list2):
         return 0.0
     return len(s1.intersection(s2)) / len(s1.union(s2))
 
+def weighted_jaccard_similarity(list1, list2):
+    """
+    计算基于元素频次的加权 Jaccard (Ruzicka) 相似度。
+    适用于由于循环导致某些节点被大量重复执行的完整路径。
+    """
+    c1 = Counter(list1)
+    c2 = Counter(list2)
+    
+    # 获取所有出现过的唯一元素集合
+    all_keys = set(c1.keys()).union(set(c2.keys()))
+    
+    intersection_sum = sum(min(c1[k], c2[k]) for k in all_keys)
+    union_sum = sum(max(c1[k], c2[k]) for k in all_keys)
+    
+    if union_sum == 0:
+        return 0.0
+    return intersection_sum / union_sum
+
 def sequence_matcher_similarity(list1, list2):
     """
     Calculate similarity based on sequence (order matters), using difflib.
@@ -74,14 +92,15 @@ def analyze_paths(db_path, path_type='stable'):
 
     print("\n--- 路径相似度对比 (Top 5 两两对比) ---")
     top_5 = top_hashes[:5]
-    print("哈希 1           | 哈希 2           | 节点 Jaccard | 序列比对得分")
-    print("-" * 70)
+    print("哈希 1           | 哈希 2           | 节点 Jaccard | 权重 Jaccard | 序列比对得分")
+    print("-" * 85)
     for i, h1 in enumerate(top_5):
         for j, h2 in enumerate(top_5):
             if i < j:
                 j_sim = jaccard_similarity(sequences[h1], sequences[h2])
+                wj_sim = weighted_jaccard_similarity(sequences[h1], sequences[h2])
                 s_sim = sequence_matcher_similarity(sequences[h1], sequences[h2])
-                print(f"{h1[:16].ljust(16)} | {h2[:16].ljust(16)} | {j_sim:.4f}       | {s_sim:.4f}")
+                print(f"{h1[:16].ljust(16)} | {h2[:16].ljust(16)} | {j_sim:.4f}       | {wj_sim:.4f}       | {s_sim:.4f}")
 
     conn.close()
 
