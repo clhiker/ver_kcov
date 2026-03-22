@@ -295,3 +295,11 @@ PY
 - [core/pc_resolver.py](/home/clhiker/ver_kcov/core/pc_resolver.py) 使用 `llvm-symbolizer` 批量解析 PC
 - [pipeline/runner.py](/home/clhiker/ver_kcov/pipeline/runner.py) 负责完整流水线
 - [core/coverage_db.py](/home/clhiker/ver_kcov/core/coverage_db.py) 负责数据库存储与查询
+
+
+# 代码缩减（基于完整执行路径）
+由于代码中包含大量由于verifier报错而截断的测试用例，这些测试用例的PC序列归于同样的等价类。
+我们需要对同一等价类的测试用例进行缩减，我们的目标是在保证现有的PC路线不变的情况下缩减测试用例。
+我们的缩减基于汇编代码和verifier的日志。通过verifier日志判断哪些汇编没有被执行，可以直接删除。
+我们以testcases 目录下面的代码为例，testcases/code 记录 源代码可以供我们生成汇编。
+记住该操作应该在虚拟机中执行
