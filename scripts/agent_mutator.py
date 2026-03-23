@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMPT_TEMPLATE_PATH = REPO_ROOT / "prompts" / "agent_mutator_prompt.txt"
+SIMILARITY_REFINEMENT_TOP_N = 8
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -184,38 +185,72 @@ def choose_sparse_enrichment_selection(config: Config) -> AutoSelection:
     if not sparse_clusters:
         raise RuntimeError("当前 enrichment 模式下没有可用的稀疏执行路径。")
 
+    log(
+        f"[*] 自动选择候选统计：稀疏路径={len(sparse_clusters)} 条，"
+        f"稠密路径={len(dense_clusters)} 条"
+    )
+
+    dense_candidates = []
+    for dense in dense_clusters:
+        selected_source = None
+        selected_testcase = None
+        for testcase_name in dense.testcase_names:
+            source = testcase_to_source_path(testcase_name)
+            if source is not None:
+                selected_source = source
+                selected_testcase = testcase_name
+                break
+        if selected_source is None:
+            continue
+        dense_candidates.append({
+            "cluster": dense,
+            "event_set": set(dense.sequence),
+            "seed_path": selected_source,
+            "seed_testcase": selected_testcase,
+        })
+
+    if not dense_candidates:
+        raise RuntimeError("找不到可反查回源码 seed 的稠密路径测试用例。")
+
     best_pair = None
     best_score = -1.0
-    for sparse in sparse_clusters:
-        for dense in dense_clusters:
-            score = combined_path_similarity(sparse.sequence, dense.sequence)
+    for index, sparse in enumerate(sparse_clusters, start=1):
+        sparse_set = set(sparse.sequence)
+        coarse_scores = []
+        for dense in dense_candidates:
+            dense_set = dense["event_set"]
+            if sparse_set and dense_set:
+                union_size = len(sparse_set | dense_set)
+                jaccard_score = (len(sparse_set & dense_set) / union_size) if union_size else 0.0
+            else:
+                jaccard_score = 0.0
+            coarse_scores.append((jaccard_score, dense))
+
+        coarse_scores.sort(key=lambda item: item[0], reverse=True)
+        refined_candidates = coarse_scores[:SIMILARITY_REFINEMENT_TOP_N]
+        for jaccard_score, dense in refined_candidates:
+            score = 0.6 * jaccard_score + 0.4 * sequence_order_similarity(
+                sparse.sequence,
+                dense["cluster"].sequence,
+            )
             if score > best_score:
                 best_score = score
                 best_pair = (dense, sparse)
 
+        if len(sparse_clusters) > 50 and (index == len(sparse_clusters) or index % 50 == 0):
+            log(f"[*] 自动选择进度：已完成 {index}/{len(sparse_clusters)} 条稀疏路径的匹配")
+
     assert best_pair is not None
     dense, sparse = best_pair
 
-    selected_source = None
-    selected_testcase = None
-    for testcase_name in dense.testcase_names:
-        source = testcase_to_source_path(testcase_name)
-        if source is not None:
-            selected_source = source
-            selected_testcase = testcase_name
-            break
-
-    if selected_source is None:
-        raise RuntimeError("无法将稠密路径测试用例反查回对应的源码 .c 文件。")
-
     sparse_preview = ", ".join(sparse.sequence[:12]) if sparse.sequence else "<no-sequence>"
-    dense_preview = ", ".join(dense.sequence[:12]) if dense.sequence else "<no-sequence>"
+    dense_preview = ", ".join(dense["cluster"].sequence[:12]) if dense["cluster"].sequence else "<no-sequence>"
     target_text = (
         "Objective: path enrichment from dense to sparse.\n"
         f"Target sparse path hash: {sparse.path_hash}\n"
         f"Target sparse testcase count: {sparse.testcase_count}\n"
-        f"Source dense path hash: {dense.path_hash}\n"
-        f"Source dense testcase count: {dense.testcase_count}\n"
+        f"Source dense path hash: {dense['cluster'].path_hash}\n"
+        f"Source dense testcase count: {dense['cluster'].testcase_count}\n"
         f"Dense-to-sparse similarity score: {best_score:.4f}\n"
         f"Target sparse path preview: {sparse_preview}\n"
         f"Current dense path preview: {dense_preview}\n"
@@ -224,15 +259,15 @@ def choose_sparse_enrichment_selection(config: Config) -> AutoSelection:
     )
 
     return AutoSelection(
-        seed_path=selected_source,
+        seed_path=dense["seed_path"],
         target_text=target_text,
         metadata={
             "objective": "enrich_sparse",
-            "selected_dense_testcase": selected_testcase,
-            "selected_dense_path_hash": dense.path_hash,
+            "selected_dense_testcase": dense["seed_testcase"],
+            "selected_dense_path_hash": dense["cluster"].path_hash,
             "selected_sparse_path_hash": sparse.path_hash,
             "similarity_score": best_score,
-            "dense_testcase_count": dense.testcase_count,
+            "dense_testcase_count": dense["cluster"].testcase_count,
             "sparse_testcase_count": sparse.testcase_count,
         },
     )
