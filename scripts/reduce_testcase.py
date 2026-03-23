@@ -4,6 +4,13 @@ import re
 import subprocess
 import argparse
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.config import DEFAULT_CONFIG_PATH, load_project_config
 
 def parse_verifier_log(log_path):
     """
@@ -97,7 +104,7 @@ def reduce_assembly(lines, inst_mapping, visited_indices):
             
     return kept_lines
 
-def run_reduction(c_file, out_dir, vm_ssh_key, vm_port="10086", vm_host="127.0.0.1"):
+def run_reduction(c_file, out_dir, vm_ssh_key, vm_port=10086, vm_host="127.0.0.1"):
     import shutil
     base_name = os.path.basename(c_file)
     name_no_ext, _ = os.path.splitext(base_name)
@@ -166,25 +173,30 @@ def run_reduction(c_file, out_dir, vm_ssh_key, vm_port="10086", vm_host="127.0.0
         
     print(f"[+] Successfully reduced! Created: {final_reduced_obj}")
 
-def batch_process(in_dir, out_dir, vm_ssh_key):
+def batch_process(in_dir, out_dir, vm_ssh_key, vm_port, vm_host):
     os.makedirs(out_dir, exist_ok=True)
     c_files = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if f.endswith('.c')]
     if not c_files:
         print(f"[!] No .c files found in {in_dir}")
         return
         
-    print(f"[*] Processing {len(c_files)} testcases from {in_dir} to {out_dir}")
+        print(f"[*] Processing {len(c_files)} testcases from {in_dir} to {out_dir}")
     for c_file in sorted(c_files):
         try:
-            run_reduction(c_file, out_dir, vm_ssh_key)
+            run_reduction(c_file, out_dir, vm_ssh_key, vm_port=vm_port, vm_host=vm_host)
         except Exception as e:
             print(f"[!] Errored on {c_file}: {e}")
 
 if __name__ == "__main__":
+    config = load_project_config()
     parser = argparse.ArgumentParser(description="Trim unexecuted BPF instructions from a testcase based on verifier log.")
     parser.add_argument("-i", "--input-dir", required=True, help="Input directory containing .c files")
     parser.add_argument("-o", "--output-dir", required=True, help="Output directory for reduced .o files")
-    parser.add_argument("--key", default="/home/clhiker/workspace/image/bookworm.id_rsa", help="SSH key for VM")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to project config YAML")
+    parser.add_argument("--key", default=None, help="Optional override for config.vm_ssh_key")
+    parser.add_argument("--port", type=int, default=None, help="Optional override for config.vm_ssh_port")
+    parser.add_argument("--host", default=None, help="Optional override for config.vm_ssh_host")
     args = parser.parse_args()
-    
-    batch_process(args.input_dir, args.output_dir, args.key)
+    config = load_project_config(args.config)
+    host = args.host or config.vm_ssh_host.replace("root@", "")
+    batch_process(args.input_dir, args.output_dir, args.key or config.vm_ssh_key, args.port or config.vm_ssh_port, host)

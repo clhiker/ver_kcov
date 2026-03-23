@@ -35,15 +35,11 @@ ver_kcov/
 └── README.md
 ```
 
-## 服务启动
-我们在虚拟机中执行测试
-```bash
-cd ~/workspace/image
-ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
-```
+## 虚拟机准备
+测试默认在虚拟机内执行。进入 guest 后按以下顺序准备环境：
 
-## 挂载
 ```bash
+ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
 mount -t virtiofs hostshare /mnt/root
 mount -t debugfs none /sys/kernel/debug
 mkdir -p /sys/fs/bpf
@@ -51,9 +47,7 @@ mount -t bpf bpf /sys/fs/bpf
 cd /mnt/root
 ```
 
-## 虚拟机内操作
-进入代码目录
-接下来执行上述命令即可，不需要再使用sudo，因为此时已经是root权限了
+进入虚拟机后默认已经是 `root`，后续命令不需要再加 `sudo`。
 
 
 ## 环境要求
@@ -190,9 +184,9 @@ python3 main.py export -o report.txt --format text
 
 ## 配置文件
 
-配置文件默认是 [config/kcov_config.yaml](/home/clhiker/ver_kcov/config/kcov_config.yaml)。
+统一配置文件是 [config/kcov_config.yaml](/home/clhiker/ver_kcov/config/kcov_config.yaml)。
 
-关键字段：
+覆盖率采集相关关键字段：
 
 ```yaml
 vmlinux_path: ../vmlinux
@@ -251,17 +245,14 @@ stable_path_line_bucket: 64
 
 - 某些程序类型不能作为普通 standalone testcase 直接加载，例如 `freplace/*`。这类 case 可能在进入 verifier 主检查前就因缺少 attach target 而失败。
 - `bpftool` 只适合作为调试手段，不是当前项目采集链路的一部分。
-- 更换 `vmlinux` 后必须重新执行：
-
-
 
 ## 故障排查
 
 ### 1. 无法打开 KCOV
 
 ```bash
-sudo mount -t debugfs none /sys/kernel/debug
-sudo chmod 666 /sys/kernel/debug/kcov
+mount -t debugfs none /sys/kernel/debug
+chmod 666 /sys/kernel/debug/kcov
 ```
 
 检查内核配置：
@@ -276,7 +267,7 @@ zgrep KCOV /proc/config.gz
 
 - 当前 `vmlinux` 是否和运行内核匹配
 - 是否重新执行过 `auto_config.py`
-- 是否重新执行过 `sudo python3 main.py run`
+- 是否重新执行过 `python3 main.py run`
 
 
 ### 4. 手工验证配置
@@ -298,8 +289,268 @@ PY
 
 
 # 代码缩减（基于完整执行路径）
-由于代码中包含大量由于verifier报错而截断的测试用例，这些测试用例的PC序列归于同样的等价类。
-我们需要对同一等价类的测试用例进行缩减，我们的目标是在保证现有的PC路线不变的情况下缩减测试用例。
-我们的缩减基于汇编代码和verifier的日志。通过verifier日志判断哪些汇编没有被执行，可以直接删除。
-我们以testcases 目录下面的代码为例，testcases/code 记录 源代码可以供我们生成汇编。
-记住该操作应该在虚拟机中执行
+
+由于 Fuzz 或测试用例生成工具会产生大量因 Verifier 报错而提前截断的用例，这些用例在其未执行的部分可能包含随意填充的大段无用指令，导致文件臃肿且混淆了 Fuzzer 的变异空间。
+为了纯化属于同一块“错误检测等价类”的测试用例种子，本项目提供了一套**基于 Verifier 真实日志的精准裁剪工具**：`scripts/reduce_testcase.py`。
+
+## 基本原理
+1. 在宿主机将 `.c` 文件初步编译为 BPF 汇编代码与全量 `.o` 对象。
+2. 通过 SSH 将对象发送至虚拟机内，依赖 `kcov_runner` 加载并提取 Verifier 回显的验证日志。
+3. 从日志中精确抽取出所有被实质性扫描过的指令索引。
+4. 返回宿主机，同步裁切未执行的死代码（并在截断越界处通过 `exit` 垫片修复），最终重新编译成纯粹精简的 `*_reduced.o` 或者原生 `*.o` 文件。
+
+## 使用方法
+
+脚本设计为全自动的批量处理闭环，所有临时文件会自动消亡。支持一次性纯化一整个目录：
+
+```bash
+# -i 指定输入源码目录，-o 指定纯化后 .o 生成的目标目录
+python3 scripts/reduce_testcase.py -i testcases/code/ -o target-seeds
+```
+
+**运行结果分类**：
+- **正常/完美案例**（未发生报错截断，100% 被接受）：脚本将不作破坏，原样保留带有完整调试信息（`-g`）和 BTF 的对象为 `n.o` 存入输出目录。
+- **需要裁剪的案例**（发生了错误截断）：脚本会自动抹除越界部分汇编，修补成极简结构后，命名为 `re_n.o` 存入输出目录。
+最终在 `target-seeds` 中，您可以获得一份既高度纯化又不折损任何控制流信息的初始种子库，可直接用于下一步的变异扩充。
+
+
+# AI 变异器设计
+
+为了在现有 testcase 之外继续扩展稀疏路径、触发新的 verifier 逻辑，本项目提供了一个带反馈闭环的 AI 变异器：`scripts/agent_mutator.py`。
+
+它不是简单地“把整份汇编丢给大模型重写”，而是按下面的思路设计的。
+
+## 设计目标
+
+1. 尽量复用现有 testcase 的可加载结构，而不是让模型从零生成一个新程序。
+2. 把模型的修改空间限制在少量关键 BPF 指令上，降低无意义改坏和语法崩坏的概率。
+3. 每次变异都必须经过真实 verifier + KCOV + 路径数据库回灌，不能只看模型自我评估。
+
+## Agent 工作流
+
+### 1. 选择种子和目标
+
+Agent 支持两种入口：
+
+- **手工模式**：显式指定 `-s/--seed` 和 `-t/--target`
+- **自动模式**：省略 `-s/-t`，由脚本自行选择
+
+自动模式会：
+
+1. 从 SQLite 中读取已有执行路径摘要和顺序轨迹。
+2. 根据 `--objective` 决定工作方式：
+   - `enrich_sparse`：显式寻找“和某条稀疏路径最相近的稠密路径”，再从稠密路径的 seed 朝稀疏路径迁移
+   - `generate_new`：从高频路径选择 seed，并结合 `verifier.c` 覆盖 gap 去生成新路径
+3. 将 `testcase name -> 源码 .c` 反查回 `testcases/code`、`mid-cases/code` 或 `mini-cases/code`
+
+也就是说，当前 agent 不是盲目变异，而是在“路径补强”和“路径生成”两种目标之间切换。
+
+### 2. 构建可变异指令视图
+
+这是当前设计里最关键的一步。
+
+最初直接把完整 `.s` 文件交给模型会遇到几个问题：
+
+- `.s` 文件里夹杂了大量 `.debug_*` / BTF / 注释元数据
+- prompt 体积过大，远端模型和本地模型都容易变慢
+- 模型很容易破坏标签、段定义或调试信息，导致根本无法编译
+
+因此当前实现不会让模型直接回传整份汇编，而是：
+
+1. 先把 `.c` 编译成 `.s`
+2. 从中筛出真正可变异的 BPF 指令，如：
+   - `rX = ...`
+   - `wX = ...`
+   - `if ... goto ...`
+   - `goto ...`
+   - `call ...`
+   - `exit`
+3. 给这些指令编号，形成一个很小的“可变异指令视图”
+
+模型最终只需要返回：
+
+```json
+{
+  "analysis": "...",
+  "hypothesis": "...",
+  "edits": [
+    {"index": 6, "line": "if w0 s< 0 goto LBB0_2"}
+  ]
+}
+```
+
+然后脚本再把这些 edit 应回完整汇编。这样能显著降低 prompt 体积，并让修改更聚焦在真正影响 verifier 约束的指令上。
+
+## 真实反馈闭环
+
+Agent 的每一次尝试都走完整验证闭环，而不是只靠语言模型做“纸面推理”：
+
+1. 在宿主机上将变异后的汇编编译为 `.o`
+2. 通过虚拟机中的 `kcov_runner` 加载 BPF object
+3. 收集：
+   - verifier 日志
+   - KCOV PC 序列
+4. 将 PC 序列送回宿主机，计算：
+   - `path_hash`
+   - 路径状态：`new / sparse / dense / no-pcs`
+   - 是否命中目标 `verifier.c` 行
+5. 结果写入本地输出目录，供后续继续迭代
+
+这意味着 agent 的评价标准并不是“模型说自己探索到了新逻辑”，而是：
+
+- 是否真的编译成功
+- 是否真的触发 verifier
+- 是否收集到了 PC
+- 最终路径在数据库里到底是全新、稀疏还是稠密
+
+## 成功判定
+
+当前 agent 的评估会结合目标一起打分：
+
+1. 在 `enrich_sparse` 模式下，优先奖励命中目标 sparse path hash
+2. 在 `generate_new` 模式下，优先奖励真正的 `new path`
+3. 其次考虑 `target_hit`、`sparse path`、`verifier_ok` 和 `pc_count`
+4. 同一轮运行内还会维护一个按 `path_hash` 去重的 diversity pool，而不是只保留单个 best attempt
+
+需要注意：
+
+- 即使 verifier 最终拒绝，很多 case 依然能留下有价值的 KCOV 路径
+- 因此 agent 不会把“程序被 verifier 拒绝”简单等价于“这次尝试完全失败”
+- 但 `verifier_ok` 的判定已经显式排除了 `failed to load`、`infinite loop detected` 等 rejection 场景
+
+## Agent 配置
+
+Agent / campaign 的默认参数已经统一写入 [config/kcov_config.yaml](/home/clhiker/ver_kcov/config/kcov_config.yaml)。
+
+当前推荐直接在配置文件中维护：
+
+- `agent_provider`
+- `agent_model`
+- `agent_temperature`
+- `agent_objective`
+- `agent_max_iterations`
+- `agent_top_k`
+- `agent_nearby_budget`
+- `agent_campaign_output_root`
+- `agent_campaign_sleep_seconds`
+- `ollama_host`
+- `openai_base_url`
+- `openai_api_key`
+- `openai_model`
+- `google_api_key`
+- `vm_ssh_key`
+- `vm_ssh_port`
+- `vm_ssh_host`
+- `vm_guest_mount_point`
+
+同样地，旧脚本如：
+
+- `scripts/reduce_testcase.py`
+- `scripts/enrich.py`
+
+现在也会默认读取同一份 `kcov_config.yaml` 中的 VM 参数，不再推荐在脚本里各自维护一套 SSH 默认值。
+
+### 本地 Ollama
+
+目前推荐优先使用本地 Ollama，避免远端网关超时或模型名不兼容。
+
+例如本机已有：
+
+```bash
+ollama list
+```
+
+若存在：
+
+```text
+qwen3.5:9b
+```
+
+则可直接运行：
+
+```bash
+python3 scripts/agent_mutator.py \
+  -s mini-cases/code/3.c \
+  -t "target verifier line 1234" \
+  --max-iterations 1 \
+  -o mutated-cases/agent_ollama_smoke
+```
+
+也可以让 agent 自动挑 seed 和 target：
+
+```bash
+python3 scripts/agent_mutator.py \
+  --max-iterations 1 \
+  -o mutated-cases/agent_ollama_auto
+```
+
+## 输出产物
+
+每次运行都会在输出目录中留下完整中间产物，方便复盘：
+
+- `*_seed.s`：原始种子汇编
+- `attempt_XX.s`：应用 edit 后的完整汇编
+- `attempt_XX.o`：编译产物
+- `attempt_XX.pcs`：KCOV PC 序列
+- `attempt_XX.verifier.log`：verifier 日志
+- `attempt_XX.proposal.json`：模型给出的分析与 edit 方案
+- `attempt_XX.result.json`：该轮真实评估结果
+- `summary.json`：本次运行选出的最佳尝试
+
+## 一键持续运行
+
+为了让 agent 持续进行路径补强 / 新路径生成，并把每轮产生的 `.o` 自动回灌进覆盖率数据库，本项目新增了 `scripts/agent_campaign.py`。
+
+它会自动完成以下步骤：
+
+1. 确认虚拟机共享目录已挂载到 `/mnt/root`
+2. 运行一轮 `scripts/agent_mutator.py`
+3. 将本轮输出目录中的 `.o` 通过虚拟机内的 `python3 main.py run -t ... --path-type full -p` 回灌进数据库
+4. 在同一个持续运行窗口里打印数据库前后的路径统计增量与当前路径发现情况
+5. 继续下一轮
+
+### 一轮测试
+
+```bash
+python3 scripts/agent_campaign.py \
+  --objective generate_new \
+  --max-iterations 1 \
+  --rounds 1 \
+  --output-root mutated-cases/campaign_test
+```
+
+### 持续运行
+
+```bash
+python3 scripts/agent_campaign.py \
+  --objective enrich_sparse \
+  --max-iterations 3 \
+  --rounds 0 \
+  --sleep-seconds 10 \
+  --output-root mutated-cases/campaign
+```
+
+说明：
+
+- `--rounds 0` 表示一直运行
+- `--objective enrich_sparse`：持续做“稠密 -> 稀疏”的路径补强
+- `--objective generate_new`：持续做“gap -> 新路径”的路径生成
+
+`scripts/agent_campaign.py` 会在同一个持续运行窗口里实时打印：
+
+- 当前轮次和输出目录
+- 当前卡在 seed 选择、模型请求、编译、guest verifier、入库的哪个阶段
+- 本轮结束后的数据库增量
+- 当前 sparse path / dense path / execution path 的总体情况
+- 最近几轮 campaign 的 summary
+
+## 当前限制
+
+当前版本的 AI 变异器仍有几个明显限制：
+
+- 目标 gap 选择仍然是启发式的，只基于 `if` 边界局部缺口，不是真正的路径约束求解
+- 目前 edit 主要是“单步局部修改”，还没有显式做多点协同变异搜索
+- 自动 seed 选择还只是路径频次驱动，没有把稳定路径聚类、覆盖组差异、历史失败类型统一纳入打分
+- 本地模型虽然更稳定，但推理速度会明显慢于轻量云端模型
+
+尽管如此，这套设计已经足够支撑“从现有种子出发，利用真实 verifier 反馈持续做定向路径探索”的工作流。

@@ -7,6 +7,9 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "kcov_config.yaml"
+
+
 @dataclass
 class Config:
     """配置类"""
@@ -45,6 +48,28 @@ class Config:
     stable_path_line_bucket: int = 64
     
     use_llvm_symbolizer: bool = True
+
+    # Agent / campaign / local model settings
+    agent_provider: str = ""
+    agent_model: str = ""
+    agent_temperature: float = 0.7
+    agent_objective: str = "enrich_sparse"
+    agent_max_iterations: int = 3
+    agent_top_k: int = 5
+    agent_nearby_budget: int = 3
+    agent_campaign_output_root: str = "./mutated-cases/campaign"
+    agent_campaign_sleep_seconds: int = 10
+    ollama_host: str = "http://127.0.0.1:11434"
+    openai_base_url: str = ""
+    openai_api_key: str = ""
+    openai_model: str = ""
+    google_api_key: str = ""
+
+    # VM settings
+    vm_ssh_key: str = ""
+    vm_ssh_port: int = 0
+    vm_ssh_host: str = ""
+    vm_guest_mount_point: str = ""
     
     @classmethod
     def from_yaml(cls, config_path: str) -> 'Config':
@@ -90,6 +115,44 @@ class Config:
                     config.stable_path_line_bucket = data['stable_path_line_bucket']
                 if 'use_llvm_symbolizer' in data:
                     config.use_llvm_symbolizer = data['use_llvm_symbolizer']
+                if 'agent_provider' in data:
+                    config.agent_provider = data['agent_provider']
+                if 'agent_model' in data:
+                    config.agent_model = data['agent_model']
+                if 'agent_temperature' in data:
+                    config.agent_temperature = data['agent_temperature']
+                if 'agent_objective' in data:
+                    config.agent_objective = data['agent_objective']
+                if 'agent_max_iterations' in data:
+                    config.agent_max_iterations = data['agent_max_iterations']
+                if 'agent_top_k' in data:
+                    config.agent_top_k = data['agent_top_k']
+                if 'agent_nearby_budget' in data:
+                    config.agent_nearby_budget = data['agent_nearby_budget']
+                if 'agent_campaign_output_root' in data:
+                    path = data['agent_campaign_output_root']
+                    config.agent_campaign_output_root = str(config_dir / path) if not Path(path).is_absolute() else path
+                if 'agent_campaign_sleep_seconds' in data:
+                    config.agent_campaign_sleep_seconds = data['agent_campaign_sleep_seconds']
+                if 'ollama_host' in data:
+                    config.ollama_host = data['ollama_host']
+                if 'openai_base_url' in data:
+                    config.openai_base_url = data['openai_base_url']
+                if 'openai_api_key' in data:
+                    config.openai_api_key = data['openai_api_key']
+                if 'openai_model' in data:
+                    config.openai_model = data['openai_model']
+                if 'google_api_key' in data:
+                    config.google_api_key = data['google_api_key']
+                if 'vm_ssh_key' in data:
+                    path = data['vm_ssh_key']
+                    config.vm_ssh_key = str(config_dir / path) if not Path(path).is_absolute() else path
+                if 'vm_ssh_port' in data:
+                    config.vm_ssh_port = data['vm_ssh_port']
+                if 'vm_ssh_host' in data:
+                    config.vm_ssh_host = data['vm_ssh_host']
+                if 'vm_guest_mount_point' in data:
+                    config.vm_guest_mount_point = data['vm_guest_mount_point']
         
         return config
     
@@ -108,7 +171,25 @@ class Config:
             'log_level': self.log_level,
             'parallel_workers': self.parallel_workers,
             'stable_path_line_bucket': self.stable_path_line_bucket,
-            'use_llvm_symbolizer': self.use_llvm_symbolizer
+            'use_llvm_symbolizer': self.use_llvm_symbolizer,
+            'agent_provider': self.agent_provider,
+            'agent_model': self.agent_model,
+            'agent_temperature': self.agent_temperature,
+            'agent_objective': self.agent_objective,
+            'agent_max_iterations': self.agent_max_iterations,
+            'agent_top_k': self.agent_top_k,
+            'agent_nearby_budget': self.agent_nearby_budget,
+            'agent_campaign_output_root': self.agent_campaign_output_root,
+            'agent_campaign_sleep_seconds': self.agent_campaign_sleep_seconds,
+            'ollama_host': self.ollama_host,
+            'openai_base_url': self.openai_base_url,
+            'openai_api_key': self.openai_api_key,
+            'openai_model': self.openai_model,
+            'google_api_key': self.google_api_key,
+            'vm_ssh_key': self.vm_ssh_key,
+            'vm_ssh_port': self.vm_ssh_port,
+            'vm_ssh_host': self.vm_ssh_host,
+            'vm_guest_mount_point': self.vm_guest_mount_point
         }
         
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
@@ -132,3 +213,10 @@ class Config:
             return False
         
         return True
+
+
+def load_project_config(config_path: Optional[str] = None) -> Config:
+    path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"Project config not found: {path}")
+    return Config.from_yaml(str(path))

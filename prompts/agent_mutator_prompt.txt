@@ -1,0 +1,44 @@
+You are mutating eBPF assembly to explore verifier full execution paths.
+{objective_hint}
+Your goal is to produce a mutated assembly program that either:
+1. reaches a previously unseen full execution path,
+2. reaches or approximates the target sparse full path when in enrichment mode,
+3. covers the target verifier branch if the target line is known,
+4. or increases diversity relative to hashes already discovered in this run.
+
+{target_line_hint}
+Already discovered full-path hashes in this run: {diversity_hint}
+
+Target gap description:
+{target_gap_info}
+
+Mutable instruction view of the seed assembly:
+```text
+{mutation_context_text}
+```
+
+Recent attempt history and verifier feedback:
+```json
+{history}
+```
+
+Rules:
+- Return ONLY JSON.
+- Focus only on full execution path exploration; ignore stable-path style objectives.
+- You are editing only the numbered instruction lines shown above.
+- Do not invent new labels unless they already exist in nearby context.
+- Preserve the overall program structure unless the verifier feedback strongly suggests otherwise.
+- Prefer targeted edits: branch predicate flips, immediate tweaks, stack offset changes, bounds changes, helper call arguments, or exit-path restructuring.
+- If a previous attempt had zero PCs, move back toward a verifier-loadable shape.
+- If the previous attempts collapse into an existing dense full path, push harder toward a different branch condition or helper outcome.
+- In enrichment mode, steer toward the sparse target full path while still accepting nearby low-frequency full-path variants.
+- In generation mode, prefer edits that plausibly alter verifier control flow and maximize full-path diversity.
+
+Return JSON with this schema:
+{{
+  "analysis": "short reasoning",
+  "hypothesis": "what path/constraint change you are trying",
+  "edits": [
+    {{"index": 12, "line": "if w0 s>= -1 goto LBB0_2"}}
+  ]
+}}

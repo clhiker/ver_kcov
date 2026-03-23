@@ -5,6 +5,7 @@
 import json
 import subprocess
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass
@@ -38,6 +39,20 @@ class PCResolver:
         self.vmlinux_path = config.vmlinux_path
         self._lookup_table: Dict[str, List[SourceLocation]] = {}
         self.use_llvm = True
+        self.llvm_symbolizer = self._find_llvm_symbolizer()
+
+    def _find_llvm_symbolizer(self) -> str:
+        """优先使用仓库内置的 llvm-symbolizer，其次回退到 PATH。"""
+        candidates = [
+            Path(self.config.vmlinux_path).resolve().parent / "llvm-symbolizer",
+            Path(__file__).resolve().parents[1] / "llvm-symbolizer",
+        ]
+        for candidate in candidates:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+        system_binary = shutil.which("llvm-symbolizer")
+        return system_binary or "llvm-symbolizer"
         
     def build_lookup_table(self, unique_pcs: Set[str], cache_file: Optional[str] = None) -> Dict[str, List[SourceLocation]]:
         """
@@ -96,7 +111,7 @@ class PCResolver:
             
             try:
                 result = subprocess.run(
-                    ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=JSON'],
+                    [self.llvm_symbolizer, '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=JSON'],
                     input=input_text,
                     capture_output=True,
                     text=True,
@@ -256,7 +271,7 @@ class PCResolver:
         """单独解析一个 PC 地址"""
         try:
             result = subprocess.run(
-                ['llvm-symbolizer', '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=JSON'],
+                [self.llvm_symbolizer, '-e', self.vmlinux_path, '--functions', '--inlining', '--demangle', '--output-style=JSON'],
                 input=pc,
                 capture_output=True,
                 text=True,

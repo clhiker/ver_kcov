@@ -459,13 +459,9 @@ class CoveragePipeline:
 def main():
     """主函数"""
     # 加载配置
-    config_path = Path(__file__).parent.parent / "config" / "kcov_config.yaml"
-    
-    if config_path.exists():
-        config = Config.from_yaml(str(config_path))
-    else:
-        config = Config()
-        print("[!] 配置文件不存在，使用默认配置")
+    from utils.config import DEFAULT_CONFIG_PATH, load_project_config
+    config_path = DEFAULT_CONFIG_PATH
+    config = load_project_config(str(config_path))
     
     # 验证配置
     if not config.validate():

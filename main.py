@@ -5,7 +5,7 @@ import sys
 import argparse
 from pathlib import Path
 
-from utils.config import Config
+from utils.config import Config, DEFAULT_CONFIG_PATH, load_project_config
 from utils.terminal_format import format_table_row
 from pipeline.runner import CoveragePipeline
 from analysis.coverage_analyzer import CoverageAnalyzer
@@ -208,11 +208,7 @@ def cmd_export(args):
 
 def load_config(config_path: str) -> Config:
     """加载配置"""
-    if Path(config_path).exists():
-        return Config.from_yaml(config_path)
-    else:
-        print(f"[!] 配置文件不存在：{config_path}，使用默认配置")
-        return Config()
+    return load_project_config(config_path)
 
 
 def print_report(report):
@@ -409,7 +405,7 @@ def print_detailed_stats(db):
 
 def main():
     parser = argparse.ArgumentParser(description='Verifer 覆盖率采集框架')
-    parser.add_argument('--config', '-c', default='config/kcov_config.yaml',
+    parser.add_argument('--config', '-c', default=str(DEFAULT_CONFIG_PATH),
                        help='配置文件路径')
     
     subparsers = parser.add_subparsers(dest='command', help='命令')
