@@ -6,6 +6,8 @@ lookup_table_cache: ../cache/pc_lookup_table.txt
 parallel_workers: 4
 result_dir: ../path_results
 testcase_dir: ../testcases
+agent_source_code_dir: ../mid-cases/code
+agent_bytecode_dir: ../mid-seeds
 use_llvm_symbolizer: true
 verifier_end_addr: '0xffffffff81de9f86'
 verifier_start_addr: '0xffffffff81dc29f0'
@@ -24,7 +26,7 @@ openai_base_url: ''
 openai_api_key: ''
 openai_model: ''
 google_api_key: ''
-vm_ssh_key: /home/clhiker/workspace/image/bookworm.id_rsa
+vm_ssh_key: ../../workspace/image/bookworm.id_rsa
 vm_ssh_port: 10086
 vm_ssh_host: root@127.0.0.1
 vm_guest_mount_point: /mnt/root

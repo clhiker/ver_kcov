@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMPT_TEMPLATE_PATH = REPO_ROOT / "prompts" / "agent_mutator_prompt.txt"
+PATH_CLUSTER_CACHE_PATH = REPO_ROOT / "cache" / "agent_path_clusters.json"
 SIMILARITY_REFINEMENT_TOP_N = 8
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -76,6 +77,7 @@ class AutoSelection:
 class PathCluster:
     path_hash: str
     testcase_names: list[str]
+    testcase_paths: list[str]
     sequence: list[str]
     testcase_count: int
 
@@ -93,14 +95,25 @@ def resolve_openai_compat_settings(config: Config, explicit_model: str) -> tuple
     return base_url, api_key, model
 
 
-def testcase_to_source_path(testcase_name: str) -> Optional[Path]:
+def testcase_to_source_path(config: Config, testcase_name: str, testcase_path: str = "") -> Optional[Path]:
+    source_dir = Path(config.agent_source_code_dir).resolve() if config.agent_source_code_dir else None
+    bytecode_dir = Path(config.agent_bytecode_dir).resolve() if config.agent_bytecode_dir else None
+
+    resolved_testcase_path = Path(testcase_path).resolve() if testcase_path else None
+    if resolved_testcase_path is not None and source_dir is not None and bytecode_dir is not None:
+        try:
+            relative_path = resolved_testcase_path.relative_to(bytecode_dir)
+        except Exception:
+            relative_path = None
+
+        if relative_path is not None:
+            source_candidate = (source_dir / relative_path).with_suffix(".c")
+            if source_candidate.exists():
+                return source_candidate
+
     base_idx = testcase_name.replace("re_", "").replace(".o", "")
-    candidates = [
-        REPO_ROOT / "testcases" / "code" / f"{base_idx}.c",
-        REPO_ROOT / "mid-cases" / "code" / f"{base_idx}.c",
-        REPO_ROOT / "mini-cases" / "code" / f"{base_idx}.c",
-    ]
-    for candidate in candidates:
+    if source_dir is not None:
+        candidate = source_dir / f"{base_idx}.c"
         if candidate.exists():
             return candidate
     return None
@@ -152,12 +165,83 @@ def find_gap_candidates(db_path: str, verifier_src: Path) -> list[GapCandidate]:
     return gaps
 
 
+def get_db_state_signature(db_path: str) -> dict[str, Any]:
+    db_file = Path(db_path).resolve()
+    signature = {
+        "db_path": str(db_file),
+        "files": [],
+    }
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(str(db_file) + suffix)
+        if candidate.exists():
+            stat = candidate.stat()
+            signature["files"].append({
+                "path": str(candidate),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            })
+    return signature
+
+
+def load_cached_path_clusters(cache_path: Path, db_signature: dict[str, Any]) -> Optional[list[PathCluster]]:
+    if not cache_path.exists():
+        return None
+
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if payload.get("db_signature") != db_signature:
+        return None
+
+    clusters = []
+    for item in payload.get("clusters", []):
+        try:
+            clusters.append(PathCluster(
+                path_hash=item["path_hash"],
+                testcase_names=list(item["testcase_names"]),
+                testcase_paths=list(item.get("testcase_paths", [""] * len(item["testcase_names"]))),
+                sequence=list(item["sequence"]),
+                testcase_count=int(item["testcase_count"]),
+            ))
+        except Exception:
+            return None
+    return clusters
+
+
+def save_cached_path_clusters(cache_path: Path, db_signature: dict[str, Any], clusters: list[PathCluster]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "db_signature": db_signature,
+        "clusters": [
+            {
+                "path_hash": cluster.path_hash,
+                "testcase_names": cluster.testcase_names,
+                "testcase_paths": cluster.testcase_paths,
+                "sequence": cluster.sequence,
+                "testcase_count": cluster.testcase_count,
+            }
+            for cluster in clusters
+        ],
+    }
+    cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 def get_path_clusters(config: Config) -> list[PathCluster]:
+    db_signature = get_db_state_signature(config.db_path)
+    cached_clusters = load_cached_path_clusters(PATH_CLUSTER_CACHE_PATH, db_signature)
+    if cached_clusters is not None:
+        log(f"[*] 已命中 path cluster 本地缓存：{PATH_CLUSTER_CACHE_PATH}")
+        return cached_clusters
+
+    log(f"[*] 未命中 path cluster 缓存，正在从数据库重建：{PATH_CLUSTER_CACHE_PATH}")
     db = CoverageDatabase(config.db_path)
     try:
         summaries = db.get_execution_paths_summary()
         clusters: list[PathCluster] = []
         for item in summaries:
+            testcase_rows = db.get_test_cases_by_path_hash(item["path_hash"])
             sequence_map = db.get_execution_path_sequence(item["path_hash"])
             flat_sequence: list[str] = []
             for file_path, lines in sorted(sequence_map.items()):
@@ -166,10 +250,13 @@ def get_path_clusters(config: Config) -> list[PathCluster]:
 
             clusters.append(PathCluster(
                 path_hash=item["path_hash"],
-                testcase_names=item["testcases"],
+                testcase_names=[tc.name for tc in testcase_rows],
+                testcase_paths=[tc.path for tc in testcase_rows],
                 sequence=flat_sequence,
-                testcase_count=len(item["testcases"]),
+                testcase_count=len(testcase_rows),
             ))
+        save_cached_path_clusters(PATH_CLUSTER_CACHE_PATH, db_signature, clusters)
+        log(f"[*] path cluster 缓存已更新，共写入 {len(clusters)} 条执行路径")
         return clusters
     finally:
         db.close()
@@ -194,8 +281,8 @@ def choose_sparse_enrichment_selection(config: Config) -> AutoSelection:
     for dense in dense_clusters:
         selected_source = None
         selected_testcase = None
-        for testcase_name in dense.testcase_names:
-            source = testcase_to_source_path(testcase_name)
+        for testcase_name, testcase_path in zip(dense.testcase_names, dense.testcase_paths):
+            source = testcase_to_source_path(config, testcase_name, testcase_path)
             if source is not None:
                 selected_source = source
                 selected_testcase = testcase_name
@@ -286,8 +373,8 @@ def choose_new_path_generation_selection(config: Config) -> AutoSelection:
     selected_testcase = None
     selected_cluster = None
     for cluster in candidate_clusters:
-        for testcase_name in cluster.testcase_names:
-            source = testcase_to_source_path(testcase_name)
+        for testcase_name, testcase_path in zip(cluster.testcase_names, cluster.testcase_paths):
+            source = testcase_to_source_path(config, testcase_name, testcase_path)
             if source is not None:
                 selected_source = source
                 selected_testcase = testcase_name

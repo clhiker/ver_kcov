@@ -4,7 +4,7 @@
 import yaml
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "kcov_config.yaml"
@@ -28,6 +28,10 @@ class Config:
     
     # 测试用例目录
     testcase_dir: str = "./testcases"
+
+    # Agent seed 反查目录配置
+    agent_source_code_dir: str = ""
+    agent_bytecode_dir: str = ""
     
     # 结果输出目录
     result_dir: str = "./path_results"
@@ -98,6 +102,18 @@ class Config:
                 if 'testcase_dir' in data:
                     path = data['testcase_dir']
                     config.testcase_dir = str(config_dir / path) if not Path(path).is_absolute() else path
+                if 'agent_source_code_dir' in data:
+                    path = data['agent_source_code_dir']
+                    config.agent_source_code_dir = str(config_dir / path) if not Path(path).is_absolute() else path
+                elif 'agent_source_code_dirs' in data and data['agent_source_code_dirs']:
+                    path = data['agent_source_code_dirs'][0]
+                    config.agent_source_code_dir = str(config_dir / path) if not Path(path).is_absolute() else path
+                if 'agent_bytecode_dir' in data:
+                    path = data['agent_bytecode_dir']
+                    config.agent_bytecode_dir = str(config_dir / path) if not Path(path).is_absolute() else path
+                elif 'agent_bytecode_dirs' in data and data['agent_bytecode_dirs']:
+                    path = data['agent_bytecode_dirs'][0]
+                    config.agent_bytecode_dir = str(config_dir / path) if not Path(path).is_absolute() else path
                 if 'result_dir' in data:
                     path = data['result_dir']
                     config.result_dir = str(config_dir / path) if not Path(path).is_absolute() else path
@@ -165,6 +181,8 @@ class Config:
             'verifier_start_addr': hex(self.verifier_start_addr),
             'verifier_end_addr': hex(self.verifier_end_addr),
             'testcase_dir': self.testcase_dir,
+            'agent_source_code_dir': self.agent_source_code_dir,
+            'agent_bytecode_dir': self.agent_bytecode_dir,
             'result_dir': self.result_dir,
             'db_path': self.db_path,
             'lookup_table_cache': self.lookup_table_cache,
