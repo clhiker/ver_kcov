@@ -36,10 +36,17 @@ ver_kcov/
 ```
 
 ## 虚拟机准备
-测试默认在虚拟机内执行。进入 guest 后按以下顺序准备环境：
+测试实际在虚拟机内执行，但现在默认从宿主机直接触发即可：`python3 main.py run ...` 会根据配置自动连接虚拟机、探测工作目录并在 guest 中执行流水线。
 
+如果需要手工排查虚拟机环境，可以进入 guest 后按以下顺序准备：
+
+### 连接
 ```bash
 ssh -q -i bookworm.id_rsa -p 10086 -o 'StrictHostKeyChecking no' root@127.0.0.1
+```
+
+### 挂载
+```bash
 mount -t virtiofs hostshare /mnt/root
 mount -t debugfs none /sys/kernel/debug
 mkdir -p /sys/fs/bpf
@@ -104,23 +111,23 @@ make
 python3 main.py clear
 ```
 
-然后执行路径采集（在虚拟机 root 环境中不再需要 sudo）：
+然后直接在宿主机执行路径采集：
 
 ```bash
-# 默认采集所有信息（完整源码覆盖 + 稳定骨架）
+# 默认采集所有信息
 python3 main.py run -t testcases
 
 # 仅抽取稳定路径骨架（极大提升速度，降低数据库体积）
 python3 main.py run -t testcases --path-type stable
 
-# 同时执行稳定路径和提取每条语句的全量上下文
+# 提取完整执行路径和源码覆盖
 python3 main.py run -t testcases --path-type full
 ```
 
 如果测试用例很多，可以开启并发（多进程）采集来大幅提升效率：
 
 ```bash
-python3 main.py run -t testcases --path-type full -p
+python3 main.py run -t mid-seeds --path-type full -p
 ```
 
 
@@ -129,7 +136,42 @@ python3 main.py run -t testcases --path-type full -p
 ```bash
 python3 main.py analyze --report
 python3 main.py analyze --stats
+python3 main.py analyze --detail
 ```
+
+当前分析口径已经收紧为只统计 `verifier.c`，不会再把头文件等其他文件混入覆盖率、PC 数或覆盖集合摘要中。
+
+如果要看**所有测试用例对 verifier 的总覆盖率**，直接使用：
+
+```bash
+python3 main.py analyze --stats
+```
+
+`analyze --stats` 重点关注输出中的：
+
+- `已覆盖源码行数`
+- `代码行覆盖率`
+- `已采集唯一 PC 数`
+- `PC 覆盖率`
+
+如果需要查看**测试用例级**覆盖明细，使用：
+
+```bash
+python3 main.py analyze --detail
+```
+
+`analyze --report` 当前默认输出：
+
+- 总体统计
+- 覆盖行集合摘要
+
+覆盖行集合摘要默认按**用例数从多到少**排序，列为：
+
+- `覆盖签名`
+- `覆盖PC数`
+- `唯一行数`
+- `用例数`
+- `测试用例集合`
 
 ### 查询
 
@@ -197,7 +239,20 @@ testcase_dir: ../testcases
 lookup_table_cache: ../cache/pc_lookup_table.txt
 db_path: ../kcov_coverage.db
 stable_path_line_bucket: 64
+agent_source_code_dir: ../mid-cases/code
+agent_bytecode_dir: ../mid-seeds
 ```
+
+与当前 agent / run 流程直接相关的字段：
+
+- `testcase_dir`
+  仅在 `python3 main.py run` 未显式传 `-t/--testcases` 时，作为默认测试用例目录。
+- `agent_source_code_dir`
+  agent 反查 seed 源码 `.c` 时使用的源码目录。
+- `agent_bytecode_dir`
+  agent 反查 seed 时使用的字节码目录；会按相对路径映射到 `agent_source_code_dir`。
+- `vm_ssh_key` / `vm_ssh_port` / `vm_ssh_host` / `vm_guest_mount_point`
+  宿主机自动连接虚拟机并执行 `run` / `campaign` 时使用。
 
 ## 各类路径的设计思路与定义
 
@@ -237,8 +292,10 @@ stable_path_line_bucket: 64
    - 保留首个锚点的穿越顺序，彻底抛弃递归重入式的套娃。
 
 **意义**：
-相比于完整执行路径暴露出的几十、上百种零散轨迹，“稳定路径”完美地将**具有本质相同验证目标的测试用例**强势收敛为几个核心验证流。它让你在进行模糊测试或大型分析时不需要在汪洋大海里迷失：你可以依据**稳定路径**聚类去定位新触发的核心验证模式！
+相比于完整执行路径暴露出的几十、上百种零散轨迹，“稳定路径”可以将**具有本质相同验证目标的测试用例**收敛为若干核心验证流。
 - **查询入口**：`query --stable-paths -v`
+
+注意：当前 agent 路径探索链路已经统一只围绕 **full execution path** 工作，不再把 stable path 作为 seed 选择、价值判断或 campaign 回灌依据。稳定路径仍可用于离线分析和查询，但不参与 agent 的自动变异决策。
 
 
 ## 已知限制
@@ -341,7 +398,7 @@ Agent 支持两种入口：
 2. 根据 `--objective` 决定工作方式：
    - `enrich_sparse`：显式寻找“和某条稀疏路径最相近的稠密路径”，再从稠密路径的 seed 朝稀疏路径迁移
    - `generate_new`：从高频路径选择 seed，并结合 `verifier.c` 覆盖 gap 去生成新路径
-3. 将 `testcase name -> 源码 .c` 反查回 `testcases/code`、`mid-cases/code` 或 `mini-cases/code`
+3. 将字节码路径按配置里的 `agent_bytecode_dir -> agent_source_code_dir` 映射回源码 `.c`
 
 也就是说，当前 agent 不是盲目变异，而是在“路径补强”和“路径生成”两种目标之间切换。
 
@@ -433,6 +490,8 @@ Agent / campaign 的默认参数已经统一写入 [config/kcov_config.yaml](/ho
 - `agent_nearby_budget`
 - `agent_campaign_output_root`
 - `agent_campaign_sleep_seconds`
+- `agent_source_code_dir`
+- `agent_bytecode_dir`
 - `ollama_host`
 - `openai_base_url`
 - `openai_api_key`
@@ -470,7 +529,7 @@ qwen3.5:9b
 
 ```bash
 python3 scripts/agent_mutator.py \
-  -s mini-cases/code/3.c \
+  -s /path/to/seed.c \
   -t "target verifier line 1234" \
   --max-iterations 1 \
   -o mutated-cases/agent_ollama_smoke
@@ -489,13 +548,14 @@ python3 scripts/agent_mutator.py \
 每次运行都会在输出目录中留下完整中间产物，方便复盘：
 
 - `*_seed.s`：原始种子汇编
-- `attempt_XX.s`：应用 edit 后的完整汇编
-- `attempt_XX.o`：编译产物
-- `attempt_XX.pcs`：KCOV PC 序列
-- `attempt_XX.verifier.log`：verifier 日志
-- `attempt_XX.proposal.json`：模型给出的分析与 edit 方案
-- `attempt_XX.result.json`：该轮真实评估结果
-- `summary.json`：本次运行选出的最佳尝试
+- `<run_dir>_attempt_XX.s`：应用 edit 后的完整汇编
+- `<run_dir>_attempt_XX.o`：编译产物
+- `<run_dir>_attempt_XX.pcs`：KCOV PC 序列
+- `<run_dir>_attempt_XX.verifier.log`：verifier 日志
+- `<run_dir>_attempt_XX.proposal.json`：模型给出的分析与 edit 方案
+- `<run_dir>_attempt_XX.result.json`：该轮真实评估结果
+- `summary.json`：本次运行选出的最佳尝试、路径池摘要和可回灌候选
+- `run_metadata.json`：本次运行的 seed、target、模型和自动选择信息
 
 ## 一键持续运行
 
@@ -505,7 +565,7 @@ python3 scripts/agent_mutator.py \
 
 1. 确认虚拟机共享目录已挂载到 `/mnt/root`
 2. 运行一轮 `scripts/agent_mutator.py`
-3. 将本轮输出目录中的 `.o` 通过虚拟机内的 `python3 main.py run -t ... --path-type full -p` 回灌进数据库
+3. 自动筛选出有价值的 full-path 结果，再通过 guest 里的 `python3 main.py run -t ... --path-type full -p` 回灌进数据库
 4. 在同一个持续运行窗口里打印数据库前后的路径统计增量与当前路径发现情况
 5. 继续下一轮
 
@@ -542,7 +602,9 @@ python3 scripts/agent_campaign.py \
 - 当前卡在 seed 选择、模型请求、编译、guest verifier、入库的哪个阶段
 - 本轮结束后的数据库增量
 - 当前 sparse path / dense path / execution path 的总体情况
-- 最近几轮 campaign 的 summary
+- 最近几轮 campaign 的摘要
+
+纯 `dense` 的重复结果不会再自动回灌进数据库，因此不会污染后续 seed 池。
 
 ## 当前限制
 
@@ -550,7 +612,22 @@ python3 scripts/agent_campaign.py \
 
 - 目标 gap 选择仍然是启发式的，只基于 `if` 边界局部缺口，不是真正的路径约束求解
 - 目前 edit 主要是“单步局部修改”，还没有显式做多点协同变异搜索
-- 自动 seed 选择还只是路径频次驱动，没有把稳定路径聚类、覆盖组差异、历史失败类型统一纳入打分
+- 自动 seed 选择目前仍然主要基于 full-path 频次与相似度启发式，没有引入更强的 verifier 结构化约束
 - 本地模型虽然更稳定，但推理速度会明显慢于轻量云端模型
 
+## Prompt 模板
+
+agent 的主提示词已经从 Python 代码中抽离，当前模板位于：
+
+- [prompts/agent_mutator_prompt.txt](/home/clhiker/ver_kcov/prompts/agent_mutator_prompt.txt)
+
+后续如果需要调整 agent 的策略、输出格式或 full-path 目标描述，优先修改该模板文件，而不是直接改 `scripts/agent_mutator.py` 中的逻辑。
+
 尽管如此，这套设计已经足够支撑“从现有种子出发，利用真实 verifier 反馈持续做定向路径探索”的工作流。
+
+## 其他辅助脚本
+
+- `scripts/check_seed_mapping.py`
+  用于检查 `agent_bytecode_dir -> agent_source_code_dir` 的 seed 反查是否成立，适合排查 `找不到可反查回源码 seed` 这类问题。
+- `scripts/analyze_verifier_map.py`
+  用于基于 `verifier.c` 和数据库覆盖结果生成初版 verifier 图谱报告，输出到 `cache/verifier_map_report.json`。

@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,7 @@ from utils.config import Config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SSH_KEY = Path.home() / "workspace/image/bookworm.id_rsa"
+GUEST_WORKDIR_CACHE_PATH = REPO_ROOT / "cache" / "guest_workdir_cache.json"
 
 
 @dataclass
@@ -37,6 +39,10 @@ def _run_local(command: list[str], check: bool = False) -> subprocess.CompletedP
     return subprocess.run(command, capture_output=True, text=True, check=check)
 
 
+def _run_local_streaming(command: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(command, text=True)
+
+
 def ssh_base_command(vm: VMConfig) -> list[str]:
     return [
         "ssh",
@@ -49,6 +55,33 @@ def ssh_base_command(vm: VMConfig) -> list[str]:
         str(vm.ssh_port),
         vm.ssh_host,
     ]
+
+
+def _guest_cache_key(vm: VMConfig) -> str:
+    return f"{vm.ssh_host}|{vm.ssh_port}|{vm.guest_mount_point}|{REPO_ROOT.name}"
+
+
+def _load_guest_workdir_cache(vm: VMConfig) -> Optional[str]:
+    if not GUEST_WORKDIR_CACHE_PATH.exists():
+        return None
+    try:
+        payload = json.loads(GUEST_WORKDIR_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    cached = payload.get(_guest_cache_key(vm))
+    return str(cached) if cached else None
+
+
+def _save_guest_workdir_cache(vm: VMConfig, guest_workdir: str) -> None:
+    GUEST_WORKDIR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {}
+    if GUEST_WORKDIR_CACHE_PATH.exists():
+        try:
+            payload = json.loads(GUEST_WORKDIR_CACHE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    payload[_guest_cache_key(vm)] = guest_workdir
+    GUEST_WORKDIR_CACHE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def ensure_guest_mount(vm: VMConfig) -> str:
@@ -68,6 +101,11 @@ def detect_guest_workdir(vm: VMConfig) -> str:
         return vm.guest_workdir
 
     mount_point = ensure_guest_mount(vm)
+    cached_workdir = _load_guest_workdir_cache(vm)
+    if cached_workdir:
+        vm.guest_workdir = cached_workdir
+        return vm.guest_workdir
+
     candidates = [
         mount_point,
         f"{mount_point}/{REPO_ROOT.name}",
@@ -83,6 +121,7 @@ def detect_guest_workdir(vm: VMConfig) -> str:
         result = _run_local(ssh_base_command(vm) + [guest_script])
         if result.returncode == 0 and result.stdout.strip():
             vm.guest_workdir = result.stdout.strip()
+            _save_guest_workdir_cache(vm, vm.guest_workdir)
             return vm.guest_workdir
 
     raise RuntimeError(
@@ -95,6 +134,12 @@ def run_guest_command(vm: VMConfig, command: str, workdir: Optional[str] = None)
     guest_workdir = workdir or detect_guest_workdir(vm)
     guest_script = f"cd {_shell_quote(guest_workdir)} && {command}"
     return _run_local(ssh_base_command(vm) + [guest_script])
+
+
+def run_guest_command_streaming(vm: VMConfig, command: str, workdir: Optional[str] = None) -> subprocess.CompletedProcess:
+    guest_workdir = workdir or detect_guest_workdir(vm)
+    guest_script = f"cd {_shell_quote(guest_workdir)} && {command}"
+    return _run_local_streaming(ssh_base_command(vm) + [guest_script])
 
 
 def to_repo_relative(path: Path) -> str:

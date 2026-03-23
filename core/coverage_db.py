@@ -25,6 +25,7 @@ class TestCase:
 
 class CoverageDatabase:
     """覆盖率数据库管理类"""
+    VERIFIER_FILE_SUFFIX = "kernel/bpf/verifier.c"
     
     def __init__(self, db_path: str = "kcov_coverage.db"):
         self.db_path = db_path
@@ -439,24 +440,29 @@ class CoverageDatabase:
 
         for testcase in testcases:
             cursor.execute('''
-                SELECT DISTINCT file_path, line_number
+                SELECT DISTINCT file_path, line_number, pc_address
                 FROM source_coverage
                 WHERE testcase_id = ?
-                ORDER BY file_path, line_number
-            ''', (testcase['id'],))
+                  AND file_path LIKE ?
+                ORDER BY file_path, line_number, pc_address
+            ''', (testcase['id'], f"%{self.VERIFIER_FILE_SUFFIX}"))
             rows = cursor.fetchall()
 
             if not rows:
                 continue
 
             files: Dict[str, List[int]] = {}
-            normalized_lines = []
+            unique_line_keys = set()
+            pc_addresses = set()
             for row in rows:
                 file_path = row['file_path']
                 line_number = row['line_number']
                 files.setdefault(file_path, []).append(line_number)
-                normalized_lines.append(f"{file_path}:{line_number}")
+                unique_line_keys.add(f"{file_path}:{line_number}")
+                if row['pc_address']:
+                    pc_addresses.add(row['pc_address'])
 
+            normalized_lines = sorted(unique_line_keys)
             signature = hashlib.sha256("\n".join(normalized_lines).encode()).hexdigest()[:16]
 
             if signature not in grouped_paths:
@@ -464,11 +470,14 @@ class CoverageDatabase:
                     'coverage_signature': signature,
                     'covered_files': len(files),
                     'covered_lines': len(normalized_lines),
+                    'unique_lines': len(normalized_lines),
+                    'covered_pcs': set(),
                     'testcases': [],
                     'files': files
                 }
 
             grouped_paths[signature]['testcases'].append(testcase['name'])
+            grouped_paths[signature]['covered_pcs'].update(pc_addresses)
 
         summaries = list(grouped_paths.values())
         summaries.sort(
@@ -481,6 +490,7 @@ class CoverageDatabase:
 
         for summary in summaries:
             summary['testcases'].sort()
+            summary['covered_pcs'] = len(summary['covered_pcs'])
 
         return summaries
     
@@ -544,11 +554,18 @@ class CoverageDatabase:
         stats['unique_coverage_groups'] = len(self.get_coverage_groups_summary())
         
         # 覆盖的源码行数（去重后的总数）
-        cursor.execute('SELECT COUNT(DISTINCT file_path || ":" || line_number) as count FROM source_coverage')
+        cursor.execute(
+            'SELECT COUNT(DISTINCT file_path || ":" || line_number) as count '
+            'FROM source_coverage WHERE file_path LIKE ?',
+            (f"%{self.VERIFIER_FILE_SUFFIX}",)
+        )
         stats['covered_lines'] = cursor.fetchone()['count']
         
         # 覆盖的文件数
-        cursor.execute('SELECT COUNT(DISTINCT file_path) as count FROM source_coverage')
+        cursor.execute(
+            'SELECT COUNT(DISTINCT file_path) as count FROM source_coverage WHERE file_path LIKE ?',
+            (f"%{self.VERIFIER_FILE_SUFFIX}",)
+        )
         stats['covered_files'] = cursor.fetchone()['count']
         
         # 每个测试用例的覆盖行数
@@ -581,7 +598,8 @@ class CoverageDatabase:
                 SELECT COUNT(DISTINCT file_path || ":" || line_number) as count
                 FROM source_coverage
                 WHERE testcase_id = ?
-            ''', (testcase_id,))
+                  AND file_path LIKE ?
+            ''', (testcase_id, f"%{self.VERIFIER_FILE_SUFFIX}"))
             unique_lines = cursor.fetchone()['count']
             
             # 该测试用例覆盖的总行数（包含重复，即 source_coverage 记录数）
@@ -589,7 +607,8 @@ class CoverageDatabase:
                 SELECT COUNT(*) as count
                 FROM source_coverage
                 WHERE testcase_id = ?
-            ''', (testcase_id,))
+                  AND file_path LIKE ?
+            ''', (testcase_id, f"%{self.VERIFIER_FILE_SUFFIX}"))
             total_lines = cursor.fetchone()['count']
             
             details.append({

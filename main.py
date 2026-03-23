@@ -1,6 +1,8 @@
 """
 主程序入口
 """
+import os
+import shlex
 import sys
 import argparse
 from pathlib import Path
@@ -10,11 +12,41 @@ from utils.terminal_format import format_table_row
 from pipeline.runner import CoveragePipeline
 from analysis.coverage_analyzer import CoverageAnalyzer
 from core.coverage_db import CoverageDatabase
+from scripts.vm_utils import detect_guest_workdir, run_guest_command_streaming, to_repo_relative, vm_config_from_project_config
 
 
 def cmd_run(args):
     """运行覆盖率采集"""
     config = load_config(args.config)
+
+    if os.environ.get("KCOV_RUN_IN_GUEST") != "1":
+        vm_config = vm_config_from_project_config(config)
+        print("[*] 正在准备虚拟机挂载点和 guest 工作目录...")
+        guest_workdir = detect_guest_workdir(vm_config)
+        print(f"[*] Guest 工作目录：{guest_workdir}")
+
+        guest_cmd = ["python3", "-u", "main.py"]
+        config_path = Path(args.config)
+        if config_path.exists():
+            guest_cmd.extend(["--config", to_repo_relative(config_path.resolve())])
+        else:
+            guest_cmd.extend(["--config", args.config])
+        guest_cmd.append("run")
+
+        if args.testcases:
+            testcase_path = Path(args.testcases)
+            testcase_arg = to_repo_relative(testcase_path.resolve()) if testcase_path.exists() else args.testcases
+            guest_cmd.extend(["--testcases", testcase_arg])
+        if args.parallel:
+            guest_cmd.append("--parallel")
+        if args.path_type:
+            guest_cmd.extend(["--path-type", args.path_type])
+
+        quoted_cmd = "KCOV_RUN_IN_GUEST=1 " + " ".join(shlex.quote(part) for part in guest_cmd)
+        result = run_guest_command_streaming(vm_config, quoted_cmd, workdir=guest_workdir)
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+        return
     
     if args.parallel:
         from pipeline.parallel_runner import ParallelCoveragePipeline
@@ -55,9 +87,9 @@ def cmd_analyze(args):
             report = analyzer.generate_report()
             print_report(report)
         
-        if args.stats:
-            # 显示详细统计
-            print_detailed_stats(db)
+        if args.stats or args.detail:
+            # --stats 打印总览；--detail 额外打印测试用例级明细
+            print_detailed_stats(db, show_testcase_details=args.detail)
 
 
 def cmd_query(args):
@@ -226,86 +258,35 @@ def print_report(report):
     if report.total_lines > 0:
         print(f"覆盖率：{report.coverage_percentage:.2f}%")
     
-    # 显示每个测试用例的覆盖详情
-    if report.testcase_coverage:
-        print("\n" + "="*60)
-        print("各测试用例覆盖详情")
-        print("="*60)
-        print(format_table_row([
-            ("测试用例", 40, "left"),
-            ("覆盖行数", 12, "right"),
-            ("唯一行数", 12, "right"),
-            ("状态", 10, "left"),
-        ]))
-        print("-"*70)
-        
-        for tc in report.testcase_coverage:
-            name = tc['name']
-            # 截断过长的名字
-            if len(name) > 38:
-                name = name[:35] + "..."
-            # 标识失败的测试用例
-            status = "失败" if tc['unique_lines'] == 0 or tc['covered_lines'] == 0 else "成功"
-            print(format_table_row([
-                (name, 40, "left"),
-                (tc['covered_lines'], 12, "right"),
-                (tc['unique_lines'], 12, "right"),
-                (status, 10, "left"),
-            ]))
-        
-        print("-"*70)
-        print(f"总计 {len(report.testcase_coverage)} 个测试用例")
-
-    if report.execution_paths:
-        print("\n" + "="*80)
-        print("执行路径摘要")
-        print("="*80)
-        print(format_table_row([
-            ("path_hash", 18, "left"),
-            ("PC 数", 10, "right"),
-            ("覆盖行数", 12, "right"),
-            ("测试用例集合", 30, "left"),
-        ]))
-        print("-"*80)
-
-        for path in report.execution_paths:
-            print(format_table_row([
-                (path['path_hash'], 18, "left"),
-                (path['pc_count'], 10, "right"),
-                (path['covered_lines'], 12, "right"),
-                (', '.join(path['testcases']), 30, "left"),
-            ]))
-
-        print("-"*80)
-        print(f"总计 {len(report.execution_paths)} 条执行路径")
-
     if report.coverage_groups:
-        print("\n" + "="*80)
+        print("\n" + "="*82)
         print("覆盖行集合摘要")
-        print("="*80)
+        print("="*82)
         print(format_table_row([
             ("覆盖签名", 18, "left"),
-            ("覆盖文件数", 12, "right"),
-            ("覆盖行数", 12, "right"),
-            ("测试用例集合", 30, "left"),
+            ("覆盖PC数", 12, "right"),
+            ("唯一行数", 12, "right"),
+            ("用例数", 8, "right"),
+            ("测试用例集合", 34, "left"),
         ]))
-        print("-"*80)
+        print("-"*82)
 
         for path in report.coverage_groups:
             print(format_table_row([
                 (path['coverage_signature'], 18, "left"),
-                (path['covered_files'], 12, "right"),
-                (path['covered_lines'], 12, "right"),
-                (', '.join(path['testcases']), 30, "left"),
+                (path.get('covered_pcs', 0), 12, "right"),
+                (path.get('unique_lines', path['covered_lines']), 12, "right"),
+                (len(path['testcases']), 8, "right"),
+                (', '.join(path['testcases']), 34, "left"),
             ]))
 
-        print("-"*80)
+        print("-"*82)
         print(f"总计 {len(report.coverage_groups)} 个覆盖行集合")
     
     print("="*60)
 
 
-def print_detailed_stats(db):
+def print_detailed_stats(db, show_testcase_details=False):
     """打印详细统计信息"""
     cursor = db.conn.cursor()
     execution_paths = db.get_execution_paths_summary()
@@ -313,7 +294,11 @@ def print_detailed_stats(db):
     coverage_groups = db.get_coverage_groups_summary()
     
     # Verifier 总代码行数
-    verifier_total_lines = 26169
+    verifier_path = Path(__file__).resolve().parent / "verifier.c"
+    verifier_total_lines = 0
+    if verifier_path.exists():
+        with open(verifier_path, 'r', encoding='utf-8', errors='ignore') as f:
+            verifier_total_lines = sum(1 for _ in f)
     verifier_address_space = 303104
     estimated_total_pcs = verifier_address_space // 4
     
@@ -327,13 +312,23 @@ def print_detailed_stats(db):
     print(f"  预估总 PC 数量：{estimated_total_pcs:,} 个")
     
     # 获取覆盖统计
-    cursor.execute("SELECT COUNT(DISTINCT pc_address) FROM source_coverage WHERE pc_address IS NOT NULL AND pc_address != ''")
+    cursor.execute(
+        "SELECT COUNT(DISTINCT pc_address) FROM source_coverage "
+        "WHERE pc_address IS NOT NULL AND pc_address != '' AND file_path LIKE ?",
+        (f"%{CoverageDatabase.VERIFIER_FILE_SUFFIX}",)
+    )
     collected_unique_pcs = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COUNT(DISTINCT file_path || ':' || line_number) FROM source_coverage")
+    cursor.execute(
+        "SELECT COUNT(DISTINCT file_path || ':' || line_number) FROM source_coverage WHERE file_path LIKE ?",
+        (f"%{CoverageDatabase.VERIFIER_FILE_SUFFIX}",)
+    )
     covered_source_lines = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COUNT(DISTINCT file_path) FROM source_coverage")
+    cursor.execute(
+        "SELECT COUNT(DISTINCT file_path) FROM source_coverage WHERE file_path LIKE ?",
+        (f"%{CoverageDatabase.VERIFIER_FILE_SUFFIX}",)
+    )
     covered_files = cursor.fetchone()[0]
     
     cursor.execute("SELECT COUNT(*) FROM test_cases")
@@ -356,49 +351,50 @@ def print_detailed_stats(db):
     print(f"  唯一覆盖行集合数：{len(coverage_groups)} 个")
     print(f"  测试用例总数：{total_test_cases} 个")
     
-    # 每个测试用例的覆盖率
-    print("\n【测试用例覆盖率详情】")
-    cursor.execute("SELECT id, name, path_hash, pc_count FROM test_cases ORDER BY name")
-    testcases = cursor.fetchall()
-    
-    print("\n  " + format_table_row([
-        ("测试用例", 20, "left"),
-        ("路径 PC 数", 10, "right"),
-        ("唯一 PC 数", 12, "right"),
-        ("覆盖行数", 10, "right"),
-        ("行覆盖率", 12, "right"),
-    ]))
-    print("  " + "-"*66)
-    
-    for tc in testcases:
-        testcase_id = tc['id']
-        name = tc['name']
-        path_hash = tc['path_hash']
-        pc_count = tc['pc_count']
+    if show_testcase_details:
+        print("\n【测试用例覆盖率详情】")
+        cursor.execute("SELECT id, name, pc_count FROM test_cases ORDER BY name")
+        testcases = cursor.fetchall()
         
-        cursor.execute("""
-            SELECT COUNT(DISTINCT file_path || ':' || line_number)
-            FROM source_coverage
-            WHERE testcase_id = ?
-        """, (testcase_id,))
-        covered_lines = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(DISTINCT pc_address)
-            FROM source_coverage
-            WHERE testcase_id = ? AND pc_address IS NOT NULL AND pc_address != ''
-        """, (testcase_id,))
-        unique_pcs = cursor.fetchone()[0]
-        
-        tc_line_coverage = (covered_lines / verifier_total_lines) * 100 if verifier_total_lines > 0 else 0.0
-        
-        print("  " + format_table_row([
-            (name, 20, "left"),
-            (pc_count, 10, "right"),
-            (unique_pcs, 12, "right"),
-            (covered_lines, 10, "right"),
-            (f"{tc_line_coverage:>11.4f}%", 12, "right"),
+        print("\n  " + format_table_row([
+            ("测试用例", 20, "left"),
+            ("路径 PC 数", 10, "right"),
+            ("唯一 PC 数", 12, "right"),
+            ("覆盖行数", 10, "right"),
+            ("行覆盖率", 12, "right"),
         ]))
+        print("  " + "-"*66)
+        
+        for tc in testcases:
+            testcase_id = tc['id']
+            name = tc['name']
+            pc_count = tc['pc_count']
+            
+            cursor.execute("""
+                SELECT COUNT(DISTINCT file_path || ':' || line_number)
+                FROM source_coverage
+                WHERE testcase_id = ?
+                  AND file_path LIKE ?
+            """, (testcase_id, f"%{CoverageDatabase.VERIFIER_FILE_SUFFIX}"))
+            covered_lines = cursor.fetchone()[0]
+            
+            cursor.execute("""
+                SELECT COUNT(DISTINCT pc_address)
+                FROM source_coverage
+                WHERE testcase_id = ? AND pc_address IS NOT NULL AND pc_address != ''
+                  AND file_path LIKE ?
+            """, (testcase_id, f"%{CoverageDatabase.VERIFIER_FILE_SUFFIX}"))
+            unique_pcs = cursor.fetchone()[0]
+            
+            tc_line_coverage = (covered_lines / verifier_total_lines) * 100 if verifier_total_lines > 0 else 0.0
+            
+            print("  " + format_table_row([
+                (name, 20, "left"),
+                (pc_count, 10, "right"),
+                (unique_pcs, 12, "right"),
+                (covered_lines, 10, "right"),
+                (f"{tc_line_coverage:>11.4f}%", 12, "right"),
+            ]))
     
     print("\n" + "="*70)
 
@@ -428,7 +424,9 @@ def main():
     analyze_parser.add_argument('--report', action='store_true',
                                help='生成覆盖率报告')
     analyze_parser.add_argument('--stats', action='store_true',
-                               help='显示详细统计信息（包括总 PC 数、总代码行数、覆盖率）')
+                               help='显示汇总统计信息（包括总 PC 数、总代码行数、覆盖率）')
+    analyze_parser.add_argument('--detail', action='store_true',
+                               help='显示测试用例级覆盖详情')
     analyze_parser.set_defaults(func=cmd_analyze)
     
     # query 命令

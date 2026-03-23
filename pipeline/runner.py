@@ -23,6 +23,7 @@ from core.coverage_db import CoverageDatabase
 
 class CoveragePipeline:
     """覆盖率采集流水线"""
+    VERIFIER_FILE_SUFFIX = "kernel/bpf/verifier.c"
     
     def __init__(self, config: Config):
         self.config = config
@@ -331,7 +332,11 @@ class CoveragePipeline:
                         locations.extend(self.resolver._lookup_table[pc])
                 
                 # 转换为字典格式
-                loc_dicts = [loc.to_dict() for loc in locations if loc.file and loc.line > 0]
+                loc_dicts = [
+                    loc.to_dict()
+                    for loc in locations
+                    if loc.file and loc.line > 0 and loc.file.endswith(self.VERIFIER_FILE_SUFFIX)
+                ]
                 
                 # 批量保存（按 testcase_id 保存）
                 if loc_dicts:
@@ -358,6 +363,8 @@ class CoveragePipeline:
 
             loc = locations[0]
             if not loc.file or loc.line <= 0:
+                continue
+            if not loc.file.endswith(self.VERIFIER_FILE_SUFFIX):
                 continue
 
             if last_seen.get(loc.file) == loc.line:
