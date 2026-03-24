@@ -83,10 +83,11 @@ def cmd_analyze(args):
     with CoverageDatabase(config.db_path) as db:
         analyzer = CoverageAnalyzer(db)
         
-        if args.report:
+        if args.report or args.path_hash or args.code_line:
             # 生成报告
             report = analyzer.generate_report()
-            print_report(report)
+            print_report(report, show_path_hash=args.path_hash or args.report, 
+                         show_code_line=args.code_line or args.report)
         
         if args.stats or args.detail:
             # --stats 打印总览；--detail 额外打印测试用例级明细
@@ -244,7 +245,7 @@ def load_config(config_path: str) -> Config:
     return load_project_config(config_path)
 
 
-def print_report(report):
+def print_report(report, show_path_hash=False, show_code_line=True):
     """打印报告"""
     print("="*60)
     print("Verifier 覆盖率分析报告")
@@ -259,9 +260,32 @@ def print_report(report):
     if report.total_lines > 0:
         print(f"覆盖率：{report.coverage_percentage:.2f}%")
     
-    if report.coverage_groups:
+    if show_path_hash and report.execution_paths:
         print("\n" + "="*82)
-        print("覆盖行集合摘要")
+        print("执行路径摘要 (按 path_hash 分组)")
+        print("="*82)
+        print(format_table_row([
+            ("path_hash", 18, "left"),
+            ("PC 数", 12, "right"),
+            ("覆盖行数", 12, "right"),
+            ("用例数", 8, "right"),
+            ("测试用例集合", 34, "left"),
+        ]))
+        print("-"*82)
+        for path in report.execution_paths:
+            print(format_table_row([
+                (path['path_hash'], 18, "left"),
+                (path['pc_count'], 12, "right"),
+                (path['covered_lines'], 12, "right"),
+                (len(path['testcases']), 8, "right"),
+                (', '.join(path['testcases']), 34, "left"),
+            ]))
+        print("-"*82)
+        print(f"总计 {len(report.execution_paths)} 条执行路径")
+
+    if show_code_line and report.coverage_groups:
+        print("\n" + "="*82)
+        print("覆盖行集合摘要 (按 coverage_signature 分组)")
         print("="*82)
         print(format_table_row([
             ("覆盖签名", 18, "left"),
@@ -429,7 +453,11 @@ def main():
     # analyze 命令
     analyze_parser = subparsers.add_parser('analyze', help='分析覆盖率数据')
     analyze_parser.add_argument('--report', action='store_true',
-                               help='生成覆盖率报告')
+                               help='生成完整覆盖率报告（包含路径和代码行汇总）')
+    analyze_parser.add_argument('--path-hash', action='store_true',
+                               help='按执行路径哈希（精确路径）汇总统计')
+    analyze_parser.add_argument('--code-line', action='store_true',
+                               help='按覆盖代码行集合汇总统计')
     analyze_parser.add_argument('--stats', action='store_true',
                                help='显示汇总统计信息（包括总 PC 数、总代码行数、覆盖率）')
     analyze_parser.add_argument('--detail', action='store_true',

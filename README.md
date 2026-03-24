@@ -134,8 +134,19 @@ python3 main.py run -t mid-seeds --path-type full -p
 ### 分析
 
 ```bash
+# 完整报告（同时包含路径和代码行汇总）
 python3 main.py analyze --report
+
+# 按执行路径哈希（精确路径）汇总统计
+python3 main.py analyze --path-hash
+
+# 按覆盖代码行集合汇总统计（原本的 --report 默认口径）
+python3 main.py analyze --code-line
+
+# 汇总统计信息（包括总 PC 数、总代码行数、覆盖率）
 python3 main.py analyze --stats
+
+# 测试用例级覆盖详情
 python3 main.py analyze --detail
 ```
 
@@ -160,10 +171,8 @@ python3 main.py analyze --stats
 python3 main.py analyze --detail
 ```
 
-`analyze --report` 当前默认输出：
-
-- 总体统计
-- 覆盖行集合摘要
+- `path-hash`：按**精确指令序列**聚合（PC 数组的哈希），反映底层执行路径的绝对一致性。
+- `code-line`：按**源码行号集合**聚合（去重后的 file:line 集合），反映功能逻辑维度的覆盖一致性。
 
 覆盖行集合摘要默认按**用例数从多到少**排序，列为：
 
