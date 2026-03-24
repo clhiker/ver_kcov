@@ -4,32 +4,43 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O2
 LDFLAGS = -lbpf
+LDFLAGS_FLEX =
 
 # 目标文件
 TARGET = kcov_runner
+TARGET_FLEX = kcov_runner_flex
 
 # 源文件
 SRC = kcov_runner.c
+SRC_FLEX = kcov_runner_flex.c
 
 # 默认目标
-all: $(TARGET)
+all: $(TARGET) $(TARGET_FLEX)
 
 # 编译 kcov_runner
 $(TARGET): $(SRC)
 	@echo "编译 $(TARGET)..."
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LDFLAGS)
 	@echo "编译完成！"
+
+# 编译 kcov_runner_flex
+$(TARGET_FLEX): $(SRC_FLEX)
+	@echo "编译 $(TARGET_FLEX)..."
+	$(CC) $(CFLAGS) -o $(TARGET_FLEX) $(SRC_FLEX) $(LDFLAGS_FLEX)
+	@echo "编译完成！"
 	@echo ""
 	@echo "使用方法:"
 	@echo "  ./$(TARGET) <program.o>"
+	@echo "  ./$(TARGET_FLEX) <program.o>"
 	@echo ""
 	@echo "示例:"
 	@echo "  ./$(TARGET) testcases/example.o"
+	@echo "  ./$(TARGET_FLEX) testcases/example.o"
 
 # 清理
 clean:
 	@echo "清理编译文件..."
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(TARGET_FLEX)
 	@echo "清理完成！"
 
 # 安装依赖（可选）

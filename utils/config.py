@@ -18,6 +18,9 @@ class Config:
     
     # KCOV runner 路径
     kcov_runner_path: str = "./kcov_runner"
+
+    # Runner 二进制名称或路径（可选，优先级高于 kcov_runner_path）
+    runner_binary: str = ""
     
     # KCOV 超时时间（秒）
     kcov_timeout: int = 30
@@ -85,7 +88,7 @@ class Config:
             config_dir = Path(config_path).resolve().parent
             
             with open(config_path, 'r') as f:
-                data = yaml.safe_load(f)
+                data = yaml.safe_load(f) or {}
                 
                 if 'vmlinux_path' in data:
                     path = data['vmlinux_path']
@@ -93,6 +96,17 @@ class Config:
                 if 'kcov_runner_path' in data:
                     path = data['kcov_runner_path']
                     config.kcov_runner_path = str(config_dir / path) if not Path(path).is_absolute() else path
+                if 'runner_binary' in data:
+                    runner_binary = str(data['runner_binary']).strip()
+                    config.runner_binary = runner_binary
+                    if runner_binary:
+                        runner_path = Path(runner_binary)
+                        if runner_path.is_absolute():
+                            config.kcov_runner_path = str(runner_path)
+                        elif runner_path.parent == Path('.'):
+                            config.kcov_runner_path = str((config_dir.parent / runner_path).resolve())
+                        else:
+                            config.kcov_runner_path = str((config_dir / runner_path).resolve())
                 if 'kcov_timeout' in data:
                     config.kcov_timeout = data['kcov_timeout']
                 if 'verifier_start_addr' in data:
@@ -176,7 +190,6 @@ class Config:
         """保存配置到 YAML 文件"""
         data = {
             'vmlinux_path': self.vmlinux_path,
-            'kcov_runner_path': self.kcov_runner_path,
             'kcov_timeout': self.kcov_timeout,
             'verifier_start_addr': hex(self.verifier_start_addr),
             'verifier_end_addr': hex(self.verifier_end_addr),
@@ -209,6 +222,12 @@ class Config:
             'vm_ssh_host': self.vm_ssh_host,
             'vm_guest_mount_point': self.vm_guest_mount_point
         }
+
+        # runner_binary 与 kcov_runner_path 语义重叠，优先只写 runner_binary。
+        if self.runner_binary:
+            data['runner_binary'] = self.runner_binary
+        else:
+            data['kcov_runner_path'] = self.kcov_runner_path
         
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, 'w') as f:

@@ -18,6 +18,7 @@ from scripts.vm_utils import detect_guest_workdir, run_guest_command_streaming, 
 def cmd_run(args):
     """运行覆盖率采集"""
     config = load_config(args.config)
+    path_type = args.path_type
 
     if os.environ.get("KCOV_RUN_IN_GUEST") != "1":
         vm_config = vm_config_from_project_config(config)
@@ -39,8 +40,8 @@ def cmd_run(args):
             guest_cmd.extend(["--testcases", testcase_arg])
         if args.parallel:
             guest_cmd.append("--parallel")
-        if args.path_type:
-            guest_cmd.extend(["--path-type", args.path_type])
+        if path_type:
+            guest_cmd.extend(["--path-type", path_type])
 
         quoted_cmd = "KCOV_RUN_IN_GUEST=1 " + " ".join(shlex.quote(part) for part in guest_cmd)
         result = run_guest_command_streaming(vm_config, quoted_cmd, workdir=guest_workdir)
@@ -59,7 +60,7 @@ def cmd_run(args):
         stats = pipeline.run(
             testcase_dir=args.testcases,
             parallel=args.parallel,
-            path_type=args.path_type
+            path_type=path_type
         )
         
         if stats['failed'] > 0:
@@ -333,6 +334,10 @@ def print_detailed_stats(db, show_testcase_details=False):
     
     cursor.execute("SELECT COUNT(*) FROM test_cases")
     total_test_cases = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM test_cases WHERE pc_count > 0")
+    successful_test_cases = cursor.fetchone()[0]
+    failed_test_cases = total_test_cases - successful_test_cases
     
     print("\n【覆盖情况】")
     print(f"  已采集唯一 PC 数：{collected_unique_pcs:,} 个")
@@ -350,6 +355,8 @@ def print_detailed_stats(db, show_testcase_details=False):
     print(f"  唯一稳定路径数：{len(stable_paths)} 条")
     print(f"  唯一覆盖行集合数：{len(coverage_groups)} 个")
     print(f"  测试用例总数：{total_test_cases} 个")
+    print(f"  成功用例数（pc_count > 0）：{successful_test_cases} 个")
+    print(f"  失败用例数（pc_count = 0）：{failed_test_cases} 个")
     
     if show_testcase_details:
         print("\n【测试用例覆盖率详情】")
