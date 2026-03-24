@@ -101,7 +101,7 @@ def extract_symbol_addresses(vmlinux_path: str) -> dict:
         clusters = []
         current_cluster = [verifier_symbols[0]]
         for symbol in verifier_symbols[1:]:
-            if symbol['addr'] - current_cluster[-1]['addr'] > 0x10000:
+            if symbol['addr'] - current_cluster[-1]['addr'] > 0x40000:
                 clusters.append(current_cluster)
                 current_cluster = [symbol]
             else:
