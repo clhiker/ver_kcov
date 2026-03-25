@@ -332,11 +332,25 @@ class CoveragePipeline:
                         locations.extend(self.resolver._lookup_table[pc])
                 
                 # 转换为字典格式
-                loc_dicts = [
-                    loc.to_dict()
-                    for loc in locations
-                    if loc.file and loc.line > 0 and loc.file.endswith(self.VERIFIER_FILE_SUFFIX)
-                ]
+                loc_dicts = []
+                for loc in locations:
+                    if loc.file and loc.line > 0 and loc.file.endswith(self.VERIFIER_FILE_SUFFIX):
+                        loc_dicts.append(loc.to_dict())
+                        
+                        # 检查是否有基本块展开数据
+                        expanded_lines = self.db.get_bb_expansion(loc.address)
+                        
+                        if expanded_lines:
+                            for line_num in expanded_lines:
+                                if line_num != loc.line: # 避免重复
+                                    # 创建展开后的虚拟位置
+                                    expanded_loc = {
+                                        'file': loc.file,
+                                        'line': line_num,
+                                        'function': loc.function,
+                                        'address': loc.address
+                                    }
+                                    loc_dicts.append(expanded_loc)
                 
                 # 批量保存（按 testcase_id 保存）
                 if loc_dicts:
@@ -361,17 +375,21 @@ class CoveragePipeline:
             if not locations:
                 continue
 
-            loc = locations[0]
-            if not loc.file or loc.line <= 0:
-                continue
-            if not loc.file.endswith(self.VERIFIER_FILE_SUFFIX):
+            # 寻找该 PC 对应的第一个 verifier.c 帧（处理内联情况）
+            target_loc = None
+            for loc in locations:
+                if loc.file and loc.line > 0 and loc.file.endswith(self.VERIFIER_FILE_SUFFIX):
+                    target_loc = loc
+                    break
+            
+            if not target_loc:
                 continue
 
-            if last_seen.get(loc.file) == loc.line:
+            if last_seen.get(target_loc.file) == target_loc.line:
                 continue
 
-            sequences.setdefault(loc.file, []).append(loc.line)
-            last_seen[loc.file] = loc.line
+            sequences.setdefault(target_loc.file, []).append(target_loc.line)
+            last_seen[target_loc.file] = target_loc.line
 
         return sequences
 

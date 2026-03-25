@@ -128,6 +128,15 @@ class CoverageDatabase:
             ON source_coverage(testcase_id, path_hash, file_path, line_number, function_name, pc_address)
         ''')
         
+        # 基本块展开表（trace_pc -> list of line numbers）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bb_expansion (
+                pc_address TEXT PRIMARY KEY,
+                lines_json TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         self.conn.commit()
 
     def _ensure_column_exists(self, table_name: str, column_name: str, column_def: str):
@@ -730,13 +739,32 @@ class CoverageDatabase:
             self.conn.rollback()
             raise
     
+    def save_bb_expansions(self, expansion_map: Dict[str, List[int]]):
+        """批量保存基本块展开数据"""
+        cursor = self.conn.cursor()
+        for pc, lines in expansion_map.items():
+            cursor.execute('''
+                INSERT OR REPLACE INTO bb_expansion (pc_address, lines_json)
+                VALUES (?, ?)
+            ''', (pc, json.dumps(lines)))
+        self.conn.commit()
+
+    def get_bb_expansion(self, pc: str) -> List[int]:
+        """获取指定 PC 的基本块展开行号列表"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT lines_json FROM bb_expansion WHERE pc_address = ?', (pc,))
+        row = cursor.fetchone()
+        if row:
+            return json.loads(row['lines_json'])
+        return []
+
     def close(self):
         """关闭数据库连接"""
         if self.conn:
             self.conn.close()
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()

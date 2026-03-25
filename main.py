@@ -206,11 +206,14 @@ def cmd_query(args):
                 print(f"\n{display_path}")
                 print(f"  覆盖行数：{len(lines)}")
                 
-                # 显示行号（如果行数不多，全部显示；否则显示前 20 行）
-                if len(lines) <= 20:
-                    print(f"  行号：{lines}")
-                else:
-                    print(f"  行号：{lines[:20]}... (共 {len(lines)} 行)")
+                # 显示行号
+                print(f"  行号：{lines}")
+                
+                # 默认显示完整的执行序列
+                if detail.get('path_hash'):
+                    sequences = db.get_execution_path_sequence(detail['path_hash'])
+                    if sequences and file_path in sequences:
+                        print(f"  执行轨迹：{' -> '.join(str(l) for l in sequences[file_path])}")
             
             print("\n" + "="*60)
         
